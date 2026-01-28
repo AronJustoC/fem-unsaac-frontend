@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  /* SAP2000 & Engineering Palette */
+  --color-brand-blue: #1e90ff;   /* SAP2000 Blue */
+  --color-brand-green: #00ff00;  /* SAP2000 Green */
+  --color-brand-magenta: #ff00ff; /* SAP2000 Magenta */
+  
+  /* OLED Optimized Dark Mode */
+  --color-bg-dark: #000000;
+  --color-bg-dark-panel: #0A0E27;
+  --color-bg-light: #F8FAFC;
+  
+  --color-text-dark: #E0E0E0;
+  --color-text-light: #0F172A;
+
+  --color-border-dark: #1E293B;
+  --color-border-light: #E2E8F0;
+
+  /* Typography */
+  --font-mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Global Smooth Transitions */
+* {
+  transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, color 0.2s ease-in-out;
+}
+
+/* Technical Background Pattern */
+.bg-grid-pattern {
+  background-image: radial-gradient(rgba(30, 144, 255, 0.1) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.dark .bg-grid-pattern {
+  background-image: radial-gradient(rgba(30, 144, 255, 0.05) 1px, transparent 1px);
+}

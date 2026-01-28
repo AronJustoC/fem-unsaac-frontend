@@ -1,0 +1,33 @@
+{
+  "name": "frontend2",
+  "type": "module",
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/react": "^4.4.2",
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/plotly.js": "^3.0.9",
+    "@types/react": "^19.2.9",
+    "@types/react-dom": "^19.2.3",
+    "astro": "^5.16.15",
+    "lucide-react": "^0.563.0",
+    "plotly.js-dist-min": "^3.3.1",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "react-plotly.js": "^2.6.0",
+    "tailwindcss": "^4.1.18",
+    "@supabase/supabase-js": "^2.48.0",
+    "pako": "^2.1.0",
+    "@msgpack/msgpack": "^3.0.0-beta2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@types/node": "^25.0.10",
+    "@types/react-plotly.js": "^2.6.4"
+  }
+}

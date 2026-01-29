@@ -34,24 +34,23 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   const themeAwareLayout = useMemo(() => {
     if (!data?.layout) return null;
 
-    // We allow the backend to define the core aesthetics (SAP2000 colors)
-    // while ensuring the layout remains responsive and fits the container.
     return {
       ...data.layout,
       autosize: true,
       margin: { l: 0, r: 0, b: 0, t: 0 },
-      // Transparency allows the styled container's background and rounded corners to show through
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
-      // We only ensure the scene is properly initialized if not present
       scene: {
         ...data.layout.scene,
-        xaxis: { ...data.layout.scene?.xaxis },
-        yaxis: { ...data.layout.scene?.yaxis },
-        zaxis: { ...data.layout.scene?.zaxis },
+        xaxis: { ...data.layout.scene?.xaxis, showspikes: false },
+        yaxis: { ...data.layout.scene?.yaxis, showspikes: false },
+        zaxis: { ...data.layout.scene?.zaxis, showspikes: false },
       },
+      uirevision: 'true',
+      hovermode: 'closest',
     };
-  }, [data?.layout, isDark]);
+  }, [data?.layout?.scene?.xaxis?.range, isDark]);
+
 
   const toggleFullscreen = () => {
     if (!isFullscreen) {
@@ -109,8 +108,8 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
         <div className="absolute inset-0 bg-grid-pattern opacity-10"></div>
         <div className="relative flex flex-col items-center gap-6">
           <div className="relative">
-            <div className="w-16 h-16 border-2 border-brand-blue/20 rounded-2xl"></div>
-            <div className="absolute inset-0 w-16 h-16 border-t-2 border-brand-blue rounded-2xl animate-spin"></div>
+            <div className="w-16 h-16 border-2 border-unsaac-red/20 rounded-2xl"></div>
+            <div className="absolute inset-0 w-16 h-16 border-t-2 border-unsaac-red rounded-2xl animate-spin"></div>
           </div>
           <div className="text-[10px] font-black text-gray-400 uppercase tracking-[0.4em] animate-pulse">
             Syncing Structural Data
@@ -160,21 +159,21 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       >
         <button
           onClick={resetView}
-          className="p-3 bg-white/80 dark:bg-bg-dark-panel/80 backdrop-blur-md text-gray-600 dark:text-gray-300 rounded-xl shadow-2xl hover:text-brand-blue border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer"
+          className="p-3 bg-white/80 dark:bg-bg-dark-panel/80 backdrop-blur-md text-gray-600 dark:text-gray-300 rounded-xl shadow-2xl hover:text-unsaac-red border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer"
           title="Reset Camera"
         >
           <RotateCcw size={18} />
         </button>
         <button
           onClick={downloadImage}
-          className="p-3 bg-white/80 dark:bg-bg-dark-panel/80 backdrop-blur-md text-gray-600 dark:text-gray-300 rounded-xl shadow-2xl hover:text-brand-blue border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer"
+          className="p-3 bg-white/80 dark:bg-bg-dark-panel/80 backdrop-blur-md text-gray-600 dark:text-gray-300 rounded-xl shadow-2xl hover:text-unsaac-red border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer"
           title="Export PNG"
         >
           <Download size={18} />
         </button>
         <button
           onClick={toggleFullscreen}
-          className="p-3 bg-white/80 dark:bg-bg-dark-panel/80 backdrop-blur-md text-gray-600 dark:text-gray-300 rounded-xl shadow-2xl hover:text-brand-blue border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer"
+          className="p-3 bg-white/80 dark:bg-bg-dark-panel/80 backdrop-blur-md text-gray-600 dark:text-gray-300 rounded-xl shadow-2xl hover:text-unsaac-red border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer"
           title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
         >
           {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
@@ -194,6 +193,8 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
             displayModeBar: false,
             displaylogo: false,
             scrollZoom: true,
+            staticPlot: false,
+            fastedit: true,
           }}
         />
       ) : (

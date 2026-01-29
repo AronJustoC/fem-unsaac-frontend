@@ -1,25 +1,32 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Outfit:wght@100..900&display=swap');
 
 @theme {
-  /* SAP2000 & Engineering Palette */
+  /* Institutional Colors (UNSAAC) */
+  --color-unsaac-red: #8B0000;
+  --color-unsaac-gold: #DAA520;
+  --color-brand-navy: #003366;
+
+  /* SAP2000 & Engineering Palette (Legacy Support) */
   --color-brand-blue: #1e90ff;   /* SAP2000 Blue */
   --color-brand-green: #00ff00;  /* SAP2000 Green */
   --color-brand-magenta: #ff00ff; /* SAP2000 Magenta */
   
-  /* OLED Optimized Dark Mode */
-  --color-bg-dark: #000000;
-  --color-bg-dark-panel: #0A0E27;
+  /* Backgrounds & Text */
+  --color-bg-dark: #003366; /* Professional Navy base */
+  --color-bg-dark-panel: #002244; /* Darker Navy for contrast */
   --color-bg-light: #F8FAFC;
   
-  --color-text-dark: #E0E0E0;
+  --color-text-dark: #F1F5F9;
   --color-text-light: #0F172A;
 
-  --color-border-dark: #1E293B;
+  --color-border-dark: #1E3A8A; /* Navy-tinted borders */
   --color-border-light: #E2E8F0;
 
   /* Typography */
-  --font-mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  --font-sans: "Fira Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-display: "Outfit", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 @custom-variant dark (&:where(.dark, .dark *));
@@ -29,12 +36,12 @@
   transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, color 0.2s ease-in-out;
 }
 
-/* Technical Background Pattern */
+/* Institutional Background Pattern */
 .bg-grid-pattern {
-  background-image: radial-gradient(rgba(30, 144, 255, 0.1) 1px, transparent 1px);
-  background-size: 20px 20px;
+  background-image: radial-gradient(rgba(0, 51, 102, 0.1) 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 
 .dark .bg-grid-pattern {
-  background-image: radial-gradient(rgba(30, 144, 255, 0.05) 1px, transparent 1px);
+  background-image: radial-gradient(rgba(218, 165, 32, 0.05) 1px, transparent 1px);
 }

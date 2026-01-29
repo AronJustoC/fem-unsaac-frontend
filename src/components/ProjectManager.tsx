@@ -65,10 +65,10 @@ const ProjectManager: React.FC = () => {
         const data = await response.json();
         setProjects(data);
       } else {
-        console.error('Failed to fetch projects:', response.statusText);
+        console.error('Error al obtener proyectos:', response.statusText);
       }
     } catch (error) {
-      console.error('Error fetching projects:', error);
+      console.error('Error al obtener proyectos:', error);
     } finally {
       setLoading(false);
     }
@@ -111,7 +111,7 @@ const ProjectManager: React.FC = () => {
         setMessage({ type: 'error', text: 'Error al actualizar.' });
       }
     } catch (error) {
-      console.error('Error saving project:', error);
+      console.error('Error al guardar proyecto:', error);
       setMessage({ type: 'error', text: 'Error de conexión.' });
     } finally {
       setSaving(false);
@@ -186,10 +186,10 @@ const ProjectManager: React.FC = () => {
       localStorage.setItem('fem_structure_data', JSON.stringify(project.structure_data));
       setCurrentProjectId(project.id);
       window.dispatchEvent(new Event('storage'));
-      setMessage({ type: 'success', text: `"${project.name}" cargado.` });
+      setMessage({ type: 'success', text: 'Cargado.' });
       setTimeout(() => setIsOpen(false), 800); 
     } catch (error) {
-      console.error('Error loading project:', error);
+      console.error('Error al cargar proyecto:', error);
       setMessage({ type: 'error', text: 'Error al cargar.' });
     }
   };
@@ -217,7 +217,7 @@ const ProjectManager: React.FC = () => {
         setMessage({ type: 'error', text: 'Error al eliminar.' });
       }
     } catch (error) {
-      console.error('Error deleting project:', error);
+      console.error('Error al eliminar proyecto:', error);
       setMessage({ type: 'error', text: 'Error de conexión.' });
     }
   };
@@ -253,7 +253,7 @@ const ProjectManager: React.FC = () => {
           <div className="absolute right-0 top-full mt-2 w-80 bg-white dark:bg-zinc-900 rounded-2xl border border-border-light dark:border-zinc-800 shadow-2xl overflow-hidden z-50 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-200">
             {/* Header */}
             <div className="px-6 py-4 border-b border-border-light dark:border-zinc-800 bg-gray-50/50 dark:bg-black/20">
-              <h3 className="text-[10px] font-black text-gray-900 dark:text-white uppercase tracking-[0.2em]">
+              <h3 className="text-[10px] font-display font-black text-gray-900 dark:text-white uppercase tracking-[0.2em]">
                 Gestor de Proyectos
               </h3>
               <p className="text-[8px] text-gray-400 font-bold uppercase tracking-widest mt-0.5">
@@ -285,7 +285,7 @@ const ProjectManager: React.FC = () => {
                         value={newProjectName}
                         onChange={(e) => setNewProjectName(e.target.value)}
                         placeholder="Nombre del proyecto..."
-                        className="w-full px-3 py-2 bg-white dark:bg-black border border-gray-200 dark:border-zinc-700 rounded-lg text-xs outline-none focus:border-brand-blue transition-colors"
+                        className="w-full px-3 py-2 bg-white dark:bg-black border border-gray-200 dark:border-zinc-700 rounded-lg text-xs outline-none focus:border-unsaac-gold transition-colors"
                         onKeyDown={(e) => {
                             if (e.key === 'Enter') projectToRename ? handleRenameSubmit() : handleSaveNew();
                             if (e.key === 'Escape') resetUI();
@@ -294,7 +294,7 @@ const ProjectManager: React.FC = () => {
                     <button 
                         onClick={() => projectToRename ? handleRenameSubmit() : handleSaveNew()}
                         disabled={!newProjectName.trim() || saving}
-                        className="w-full py-2 bg-brand-blue hover:bg-brand-blue/90 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95 disabled:opacity-50"
+                        className="w-full py-2 bg-unsaac-red hover:bg-unsaac-red/90 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95 disabled:opacity-50"
                     >
                         {saving ? <Loader2 size={12} className="animate-spin mx-auto" /> : (projectToRename ? 'Renombrar' : 'Guardar')}
                     </button>
@@ -308,7 +308,7 @@ const ProjectManager: React.FC = () => {
                         <button
                             onClick={() => handleSave(false)}
                             disabled={saving}
-                            className="flex-1 flex items-center justify-center gap-2 px-3 py-3 bg-brand-blue/10 hover:bg-brand-blue/20 text-brand-blue rounded-xl font-black text-[10px] uppercase tracking-widest transition-all active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="flex-1 flex items-center justify-center gap-2 px-3 py-3 bg-unsaac-red/10 hover:bg-unsaac-red/20 text-unsaac-red rounded-xl font-black text-[10px] uppercase tracking-widest transition-all active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                             title={currentProjectId ? "Actualizar proyecto existente" : "Guardar como nuevo proyecto"}
                         >
                             {saving ? (
@@ -332,7 +332,7 @@ const ProjectManager: React.FC = () => {
 
                     <button
                         onClick={handleLoadElement}
-                        className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-brand-magenta/10 hover:bg-brand-magenta/20 text-brand-magenta rounded-xl font-black text-[10px] uppercase tracking-widest transition-all active:scale-95 cursor-pointer"
+                        className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-unsaac-gold/10 hover:bg-unsaac-gold/20 text-unsaac-gold rounded-xl font-black text-[10px] uppercase tracking-widest transition-all active:scale-95 cursor-pointer"
                         title="Cargar un ejemplo de viga simple (borrará el progreso actual no guardado)"
                     >
                         <Zap size={14} />
@@ -342,14 +342,14 @@ const ProjectManager: React.FC = () => {
 
                     {/* Stored Projects List */}
                     <div className="p-4">
-                    <h4 className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-3 px-2 flex justify-between items-center">
+                    <h4 className="text-[9px] font-display font-black text-gray-400 uppercase tracking-widest mb-3 px-2 flex justify-between items-center">
                         Proyectos Guardados
                         <span className="text-[8px] bg-gray-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded text-gray-500">{projects.length}</span>
                     </h4>
 
                     {loading ? (
                         <div className="flex items-center justify-center py-8">
-                        <Loader2 size={20} className="animate-spin text-brand-blue" />
+                        <Loader2 size={20} className="animate-spin text-unsaac-red" />
                         </div>
                     ) : projects.length === 0 ? (
                         <div className="py-8 text-center bg-gray-50 dark:bg-zinc-800/50 rounded-xl border border-dashed border-gray-200 dark:border-zinc-700">
@@ -380,7 +380,7 @@ const ProjectManager: React.FC = () => {
                                         onClick={() => handleLoad(project)}
                                         className="flex-1 flex items-center gap-3 text-left cursor-pointer transition-all active:scale-[0.98]"
                                     >
-                                        <Play size={12} className={`${currentProjectId === project.id ? 'text-brand-magenta' : 'text-brand-green'} group-hover:scale-110 transition-transform`} />
+                                        <Play size={12} className={`${currentProjectId === project.id ? 'text-unsaac-gold' : 'text-green-500'} group-hover:scale-110 transition-transform`} />
                                         <div className="flex-1 min-w-0">
                                         <p className="text-[10px] font-black text-gray-900 dark:text-white truncate">
                                             {project.name}
@@ -394,7 +394,7 @@ const ProjectManager: React.FC = () => {
                                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                         <button
                                         onClick={(e) => startRename(e, project)}
-                                        className="p-1.5 hover:bg-brand-blue/10 text-gray-400 hover:text-brand-blue rounded-lg transition-colors cursor-pointer"
+                                        className="p-1.5 hover:bg-unsaac-red/10 text-gray-400 hover:text-unsaac-red rounded-lg transition-colors cursor-pointer"
                                         title="Renombrar"
                                         >
                                         <Pencil size={12} />
@@ -433,10 +433,10 @@ function generateSimpleElement() {
       { id: 1, node_ids: [1, 2], material_id: 1, section_id: 1 }
     ],
     materials: [
-      { id: 1, name: 'Steel', E: 210e9, nu: 0.3, rho: 7850 }
+      { id: 1, name: 'Acero', E: 210e9, nu: 0.3, rho: 7850 }
     ],
     sections: [
-      { id: 1, name: 'Standard', area: 0.01, Iz: 1e-6, Iy: 1e-6, J: 2e-6 }
+      { id: 1, name: 'Sección Estándar', area: 0.01, Iz: 1e-6, Iy: 1e-6, J: 2e-6 }
     ],
     restraints: {
       1: ['ux', 'uy', 'uz', 'rx', 'ry', 'rz']

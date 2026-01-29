@@ -43,7 +43,7 @@ const AppContent: React.FC = () => {
       restraints: Object.fromEntries(
         Object.entries(structure.restraints).map(([nodeId, dofs]: [string, any]) => [
           nodeId,
-          dofs.map((dof: string) => mapDofToBackend(dof))
+          Array.from(new Set(dofs.map((dof: string) => mapDofToBackend(dof))))
         ])
       )
     };
@@ -94,12 +94,12 @@ const AppContent: React.FC = () => {
           <div className="lg:col-span-7">
             <div className="sticky top-28 space-y-6">
               <div className="flex items-center gap-3 mb-2 px-2">
-                <div className="w-1.5 h-6 bg-brand-blue rounded-full"></div>
-                <h2 className="text-sm font-black text-gray-400 uppercase tracking-[0.3em]">
-                  3D Geometry Engine
+                <div className="w-1.5 h-6 bg-unsaac-red rounded-full"></div>
+                <h2 className="text-sm font-display font-black text-gray-400 uppercase tracking-[0.3em]">
+                  Motor de Geometría 3D
                 </h2>
               </div>
-              <div className="bg-white dark:bg-bg-dark-panel rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-brand-blue/30 group h-[600px] relative">
+              <div className="bg-white dark:bg-bg-dark-panel rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-unsaac-gold/30 group h-[600px] relative">
                 <GraphicsView 
                   data={vizData} 
                   loading={loading} 
@@ -108,7 +108,7 @@ const AppContent: React.FC = () => {
                 />
                 <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
                   <div className="bg-black/60 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 text-[9px] font-mono text-white/70">
-                    GPU Accelerated
+                    Aceleración por GPU
                   </div>
                 </div>
               </div>
@@ -116,6 +116,34 @@ const AppContent: React.FC = () => {
           </div>
         </div>
       </main>
+
+      <footer className="relative z-10 py-10 px-8 border-t border-border-light dark:border-border-dark mt-20 bg-bg-light/30 dark:bg-bg-dark/30 backdrop-blur-xl">
+        <div className="max-w-screen-2xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-6">
+          <div className="space-y-2 text-center sm:text-left">
+            <div className="flex items-center justify-center sm:justify-start gap-2">
+              <div className="w-1 h-4 bg-unsaac-red"></div>
+              <p className="text-[11px] font-display font-black uppercase tracking-[0.3em] text-text-light dark:text-text-dark">
+                EPIM UNSAAC <span className="text-unsaac-gold opacity-80">—</span> Tesis v1.0.0
+              </p>
+            </div>
+            <p className="text-[10px] font-sans font-medium uppercase tracking-[0.2em] text-text-light/30 dark:text-text-dark/30">
+              © 2026 Escuela Profesional de Ingeniería Mecánica - UNSAAC
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-4">
+            <div className="flex flex-col items-center sm:items-end gap-1">
+              <div className="flex gap-1">
+                <div className="w-2 h-2 rounded-full bg-unsaac-red"></div>
+                <div className="w-2 h-2 rounded-full bg-unsaac-gold"></div>
+              </div>
+              <span className="text-[8px] font-mono font-bold text-text-light/20 dark:text-text-dark/20 uppercase tracking-widest">
+                Excelencia Académica
+              </span>
+            </div>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 };

@@ -148,24 +148,24 @@ const StaticAnalysisView: React.FC = () => {
         <div className="shrink-0 p-6 border-b border-border-light dark:border-border-dark">
           <div className="flex items-start justify-between mb-4">
             <div>
-              <p className="text-[8px] text-gray-400 font-bold uppercase tracking-[0.3em] mb-1">STRUCTURAL VERIFICATION</p>
-              <h1 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">
-                STATIC TERMINAL
+              <p className="text-[8px] text-gray-400 font-bold uppercase tracking-[0.3em] mb-1">VERIFICACIÓN ESTRUCTURAL</p>
+              <h1 className="text-2xl font-display font-black text-gray-900 dark:text-white uppercase tracking-tighter">
+                TERMINAL ESTÁTICA
               </h1>
             </div>
             <button
               onClick={runAnalysis}
               disabled={loading || !structure}
-              className="flex items-center gap-2 bg-brand-blue hover:bg-brand-blue/90 disabled:opacity-50 text-white px-4 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg transition-all active:scale-95 cursor-pointer"
+              className="flex items-center gap-2 bg-unsaac-red hover:bg-unsaac-red/90 disabled:opacity-50 text-white px-4 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg transition-all active:scale-95 cursor-pointer"
             >
               {loading ? <Loader2 className="animate-spin" size={14} /> : <Play size={14} />}
-              COMPUTE
+              CALCULAR
             </button>
           </div>
 
           {/* Scale Slider */}
-          <div className="flex items-center gap-3 bg-gray-50 dark:bg-black/20 p-3 rounded-xl border border-border-light dark:border-border-dark">
-            <label className="text-[8px] font-black text-gray-400 uppercase tracking-widest shrink-0">SCALE</label>
+          <div className="flex items-center gap-3 bg-gray-50 dark:bg-black/20 p-3 rounded-xl border border-unsaac-red/10 dark:border-brand-navy/30">
+            <label className="text-[8px] font-black text-gray-400 uppercase tracking-widest shrink-0">ESCALA</label>
             <input
               type="range" 
               min={scaleRange.min} 
@@ -173,23 +173,23 @@ const StaticAnalysisView: React.FC = () => {
               step={scaleRange.step} 
               value={scale}
               onChange={(e) => setScale(parseFloat(e.target.value))}
-              className="flex-1 h-1 bg-gray-200 dark:bg-bg-dark rounded-lg appearance-none cursor-pointer accent-brand-blue"
+              className="flex-1 h-1 bg-gray-200 dark:bg-bg-dark rounded-lg appearance-none cursor-pointer accent-unsaac-red"
             />
             <input
               type="number" value={scale.toExponential(2)}
               readOnly
-              className="w-20 px-2 py-1 text-[10px] font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-brand-blue focus:outline-none text-center"
+              className="w-20 px-2 py-1 text-[10px] font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-unsaac-red focus:outline-none text-center"
             />
           </div>
         </div>
 
         {/* TABS */}
         <div className="shrink-0 px-6 pt-4">
-          <div className="flex p-1 bg-gray-100 dark:bg-black/40 rounded-xl border border-border-light dark:border-border-dark">
+          <div className="flex p-1 bg-gray-100 dark:bg-black/40 rounded-xl border border-unsaac-red/10 dark:border-brand-navy/30">
             {[
-              { id: 'displacements', label: 'DISPLACEMENTS', color: 'text-brand-blue' },
-              { id: 'reactions', label: 'REACTIONS', color: 'text-brand-green' },
-              { id: 'forces', label: 'INTERNAL FORCES', color: 'text-brand-magenta' }
+              { id: 'displacements', label: 'DESPLAZAMIENTOS', color: 'text-unsaac-red' },
+              { id: 'reactions', label: 'REACCIONES', color: 'text-brand-navy' },
+              { id: 'forces', label: 'ESFUERZOS INTERNOS', color: 'text-unsaac-gold' }
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -208,33 +208,33 @@ const StaticAnalysisView: React.FC = () => {
         <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-4 space-y-4">
           {showTables === 'displacements' && (
             results?.displacements ? Object.entries(results.displacements).map(([nodeId, disp]: [string, any]) => (
-              <div key={nodeId} className="p-4 bg-gray-50 dark:bg-black/20 rounded-xl border border-border-light dark:border-border-dark group hover:border-brand-blue/50 transition-all duration-300">
+              <div key={nodeId} className="p-4 bg-gray-50 dark:bg-black/20 rounded-xl border border-unsaac-red/10 dark:border-brand-navy/30 group hover:border-unsaac-red/50 transition-all duration-300">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
-                    <div className="w-1.5 h-4 bg-brand-blue rounded-full"></div>
-                    <span className="text-[10px] font-black text-brand-blue uppercase tracking-widest">Node {nodeId}</span>
+                    <div className="w-1.5 h-4 bg-unsaac-red rounded-full"></div>
+                    <span className="text-[10px] font-black text-unsaac-red uppercase tracking-widest">Nodo {nodeId}</span>
                   </div>
                   <span className="text-[8px] font-mono font-bold text-gray-400">SI: m / rad</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   {['UX', 'UY', 'UZ', 'RX', 'RY', 'RZ'].map((axis, i) => (
-                    <div key={axis} className="bg-white dark:bg-bg-dark p-2 rounded-lg border border-border-light dark:border-border-dark group-hover:border-brand-blue/20 transition-all">
+                    <div key={axis} className="bg-white dark:bg-bg-dark p-2 rounded-lg border border-border-light dark:border-border-dark group-hover:border-unsaac-red/20 transition-all">
                       <span className="text-[7px] text-gray-400 font-black uppercase mb-0.5 block tracking-tighter">{axis}</span>
-                      <span className="text-[10px] font-mono font-bold text-gray-900 dark:text-brand-blue truncate block">{disp[i]?.toExponential(4) || "0.0000E+0"}</span>
+                      <span className="text-[10px] font-mono font-bold text-gray-900 dark:text-unsaac-red truncate block">{disp[i]?.toExponential(4) || "0.0000E+0"}</span>
                     </div>
                   ))}
                 </div>
               </div>
-            )) : <EmptyState msg="Awaiting structural computation..." />
+            )) : <EmptyState msg="Esperando cálculo estructural..." />
           )}
 
           {showTables === 'reactions' && (
             results?.reactions && Object.keys(results.reactions).length > 0 ? Object.entries(results.reactions).map(([nodeId, reac]: [string, any]) => (
-              <div key={nodeId} className="p-4 bg-gray-50 dark:bg-black/20 rounded-xl border border-border-light dark:border-border-dark group hover:border-brand-green/50 transition-all duration-300">
+              <div key={nodeId} className="p-4 bg-gray-50 dark:bg-black/20 rounded-xl border border-unsaac-red/10 dark:border-brand-navy/30 group hover:border-brand-navy/50 transition-all duration-300">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
-                    <div className="w-1.5 h-4 bg-brand-green rounded-full"></div>
-                    <span className="text-[10px] font-black text-brand-green uppercase tracking-widest">Reaction {nodeId}</span>
+                    <div className="w-1.5 h-4 bg-brand-navy rounded-full"></div>
+                    <span className="text-[10px] font-black text-brand-navy uppercase tracking-widest">Reacción {nodeId}</span>
                   </div>
                   <span className="text-[8px] font-mono font-bold text-gray-400">SI: N / Nm</span>
                 </div>
@@ -245,37 +245,37 @@ const StaticAnalysisView: React.FC = () => {
                     return (
                       <div key={axis} className={`bg-white dark:bg-bg-dark p-2 rounded-lg border border-border-light dark:border-border-dark transition-all ${isSignificant ? 'opacity-100' : 'opacity-20'}`}>
                         <span className="text-[7px] text-gray-400 font-black uppercase mb-0.5 block">{axis}</span>
-                        <span className={`text-[10px] font-mono font-bold truncate block ${isSignificant ? 'text-brand-green' : 'text-gray-500'}`}>{val?.toFixed(4) || "0.0000"}</span>
+                        <span className={`text-[10px] font-mono font-bold truncate block ${isSignificant ? 'text-brand-navy' : 'text-gray-500'}`}>{val?.toFixed(4) || "0.0000"}</span>
                       </div>
                     )
                   })}
                 </div>
               </div>
-            )) : <EmptyState msg="No significant reactions detected." />
+            )) : <EmptyState msg="No se detectaron reacciones significativas." />
           )}
 
           {showTables === 'forces' && (
             results?.element_forces ? Object.entries(results.element_forces).map(([elId, forces]: [string, any]) => (
-              <div key={elId} className="p-4 bg-gray-50 dark:bg-black/20 rounded-xl border border-border-light dark:border-border-dark group hover:border-brand-magenta/50 transition-all duration-300">
+              <div key={elId} className="p-4 bg-gray-50 dark:bg-black/20 rounded-xl border border-unsaac-red/10 dark:border-brand-navy/30 group hover:border-unsaac-gold/50 transition-all duration-300">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
-                    <div className="w-1.5 h-4 bg-brand-magenta rounded-full"></div>
-                    <span className="text-[10px] font-black text-brand-magenta uppercase tracking-widest">Element {elId}</span>
+                    <div className="w-1.5 h-4 bg-unsaac-gold rounded-full"></div>
+                    <span className="text-[10px] font-black text-unsaac-gold uppercase tracking-widest">Elemento {elId}</span>
                   </div>
-                  <span className="text-[8px] font-mono font-bold text-gray-400">Local Vector</span>
+                  <span className="text-[8px] font-mono font-bold text-gray-400">Vector Local</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-white dark:bg-bg-dark p-2 rounded-lg border border-border-light dark:border-border-dark group-hover:border-brand-magenta/20 transition-all">
+                  <div className="bg-white dark:bg-bg-dark p-2 rounded-lg border border-border-light dark:border-border-dark group-hover:border-unsaac-gold/20 transition-all">
                     <span className="text-[7px] text-gray-400 font-black uppercase mb-0.5 block">Axial (N)</span>
-                    <span className="text-[10px] font-mono font-bold text-gray-900 dark:text-brand-magenta truncate block">{forces.N1?.toFixed(4)}</span>
+                    <span className="text-[10px] font-mono font-bold text-gray-900 dark:text-unsaac-gold truncate block">{forces.N1?.toFixed(4)}</span>
                   </div>
-                  <div className="bg-white dark:bg-bg-dark p-2 rounded-lg border border-border-light dark:border-border-dark group-hover:border-brand-magenta/20 transition-all">
-                    <span className="text-[7px] text-gray-400 font-black uppercase mb-0.5 block">Moment Y (Nm)</span>
-                    <span className="text-[10px] font-mono font-bold text-gray-900 dark:text-brand-magenta truncate block">{forces.M1y?.toFixed(4)}</span>
+                  <div className="bg-white dark:bg-bg-dark p-2 rounded-lg border border-border-light dark:border-border-dark group-hover:border-unsaac-gold/20 transition-all">
+                    <span className="text-[7px] text-gray-400 font-black uppercase mb-0.5 block">Momento Y (Nm)</span>
+                    <span className="text-[10px] font-mono font-bold text-gray-900 dark:text-unsaac-gold truncate block">{forces.M1y?.toFixed(4)}</span>
                   </div>
                 </div>
               </div>
-            )) : <EmptyState msg="Internal mechanics not computed." />
+            )) : <EmptyState msg="Mecánica interna no calculada." />
           )}
         </div>
       </div>

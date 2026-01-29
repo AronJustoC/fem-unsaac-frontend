@@ -152,33 +152,33 @@ const ModalAnalysisView: React.FC = () => {
         <div className="shrink-0 p-6 border-b border-border-light dark:border-border-dark">
           <div className="flex items-start justify-between mb-4">
             <div>
-              <p className="text-[8px] text-gray-400 font-bold uppercase tracking-[0.3em] mb-1">DYNAMIC FREQUENCY</p>
-              <h1 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">
-                MODAL TERMINAL
+              <p className="text-[8px] text-gray-400 font-bold uppercase tracking-[0.3em] mb-1">FRECUENCIA DINÁMICA</p>
+              <h1 className="text-2xl font-display font-black text-gray-900 dark:text-white uppercase tracking-tighter">
+                TERMINAL MODAL
               </h1>
             </div>
             <button
               onClick={runAnalysis}
               disabled={loading || !structure}
-              className="flex items-center gap-2 bg-brand-magenta hover:bg-brand-magenta/90 disabled:opacity-50 text-white px-4 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg transition-all active:scale-95 cursor-pointer"
+              className="flex items-center gap-2 bg-unsaac-red hover:bg-unsaac-red/90 disabled:opacity-50 text-white px-4 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg transition-all active:scale-95 cursor-pointer"
             >
               {loading ? <Loader2 className="animate-spin" size={14} /> : <Play size={14} />}
-              SOLVE
+              RESOLVER
             </button>
           </div>
 
           {/* Controls: Modes + Scale */}
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-3 bg-gray-50 dark:bg-black/20 p-3 rounded-xl border border-border-light dark:border-border-dark flex-1">
-              <label className="text-[8px] font-black text-gray-400 uppercase tracking-widest shrink-0">MODES</label>
+            <div className="flex items-center gap-3 bg-gray-50 dark:bg-black/20 p-3 rounded-xl border border-unsaac-red/10 dark:border-brand-navy/30 flex-1">
+              <label className="text-[8px] font-black text-gray-400 uppercase tracking-widest shrink-0">MODOS</label>
               <input
                 type="number" min="1" max="50" value={numModes}
                 onChange={(e) => setNumModes(parseInt(e.target.value) || 1)}
-                className="w-16 px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-brand-magenta focus:outline-none text-center"
+                className="w-16 px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-unsaac-red focus:outline-none text-center"
               />
             </div>
-            <div className="flex items-center gap-3 bg-gray-50 dark:bg-black/20 p-3 rounded-xl border border-border-light dark:border-border-dark flex-1">
-              <label className="text-[8px] font-black text-gray-400 uppercase tracking-widest shrink-0">SCALE</label>
+            <div className="flex items-center gap-3 bg-gray-50 dark:bg-black/20 p-3 rounded-xl border border-unsaac-red/10 dark:border-brand-navy/30 flex-1">
+              <label className="text-[8px] font-black text-gray-400 uppercase tracking-widest shrink-0">ESCALA</label>
               <input
                 type="range" 
                 min={scaleRange.min} 
@@ -186,12 +186,12 @@ const ModalAnalysisView: React.FC = () => {
                 step={scaleRange.step} 
                 value={scale}
                 onChange={(e) => setScale(parseFloat(e.target.value))}
-                className="flex-1 h-1 bg-gray-200 dark:bg-bg-dark rounded-lg appearance-none cursor-pointer accent-brand-magenta"
+                className="flex-1 h-1 bg-gray-200 dark:bg-bg-dark rounded-lg appearance-none cursor-pointer accent-unsaac-red"
               />
               <input
                 type="number" value={scale.toExponential(2)}
                 readOnly
-                className="w-20 px-2 py-1 text-[10px] font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-brand-magenta focus:outline-none text-center"
+                className="w-20 px-2 py-1 text-[10px] font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-unsaac-red focus:outline-none text-center"
               />
             </div>
           </div>
@@ -199,9 +199,9 @@ const ModalAnalysisView: React.FC = () => {
 
         {/* TAB LABEL */}
         <div className="shrink-0 px-6 pt-4">
-          <div className="flex p-1 bg-gray-100 dark:bg-black/40 rounded-xl border border-border-light dark:border-border-dark">
-            <div className="flex-1 py-2 px-2 text-[8px] font-black uppercase tracking-wider bg-white dark:bg-bg-dark text-brand-magenta rounded-lg shadow-md">
-              VIBRATION MODES
+          <div className="flex p-1 bg-gray-100 dark:bg-black/40 rounded-xl border border-unsaac-red/10 dark:border-brand-navy/30">
+            <div className="flex-1 py-2 px-2 text-[8px] font-black uppercase tracking-wider bg-white dark:bg-bg-dark text-unsaac-gold rounded-lg shadow-md">
+              MODOS DE VIBRACIÓN
             </div>
           </div>
         </div>
@@ -209,11 +209,11 @@ const ModalAnalysisView: React.FC = () => {
         {/* RESULTS DATA - Scrollable */}
         <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-4 space-y-3">
           {results?.frequencies ? results.frequencies.map((freq: number, idx: number) => (
-            <button key={idx} onClick={() => setSelectedMode(idx)} className={`w-full text-left p-4 rounded-xl border transition-all flex items-center justify-between group cursor-pointer ${selectedMode === idx ? 'bg-brand-magenta/5 border-brand-magenta/40 scale-[1.02] shadow-lg' : 'bg-gray-50 dark:bg-black/20 border-border-light dark:border-border-dark hover:border-brand-magenta/30'}`}>
+            <button key={idx} onClick={() => setSelectedMode(idx)} className={`w-full text-left p-4 rounded-xl border transition-all flex items-center justify-between group cursor-pointer ${selectedMode === idx ? 'bg-unsaac-gold/5 border-unsaac-gold/40 scale-[1.02] shadow-lg' : 'bg-gray-50 dark:bg-black/20 border-unsaac-red/10 dark:border-brand-navy/30 hover:border-unsaac-gold/30'}`}>
               <div className="flex items-center gap-4">
-                <span className={`w-8 h-8 rounded-xl flex items-center justify-center text-[11px] font-black ${selectedMode === idx ? 'bg-brand-magenta text-white' : 'bg-white dark:bg-bg-dark text-gray-400 border border-border-light dark:border-border-dark'}`}>{idx + 1}</span>
+                <span className={`w-8 h-8 rounded-xl flex items-center justify-center text-[11px] font-black ${selectedMode === idx ? 'bg-unsaac-gold text-white' : 'bg-white dark:bg-bg-dark text-gray-400 border border-border-light dark:border-border-dark'}`}>{idx + 1}</span>
                 <div className="flex flex-col">
-                  <span className={`text-sm font-black ${selectedMode === idx ? 'text-brand-magenta' : 'text-gray-700 dark:text-gray-300'}`}>{formatFreq(freq)} Hz</span>
+                  <span className={`text-sm font-black ${selectedMode === idx ? 'text-unsaac-gold' : 'text-gray-700 dark:text-gray-300'}`}>{formatFreq(freq)} Hz</span>
                   <span className="text-[9px] font-mono font-bold text-gray-400 uppercase">{formatFreq(freq * 2 * Math.PI)} rad/s</span>
                 </div>
               </div>
@@ -221,7 +221,7 @@ const ModalAnalysisView: React.FC = () => {
                 {freq > 1e-9 ? (1 / freq).toFixed(2) + "s" : "∞"}
               </div>
             </button>
-          )) : <EmptyState msg="Initiate modal solver..." />}
+          )) : <EmptyState msg="Iniciar resolvedor modal..." />}
         </div>
       </div>
 
@@ -230,13 +230,13 @@ const ModalAnalysisView: React.FC = () => {
         <div className="flex-1 bg-white dark:bg-bg-dark relative">
           {/* Optional overlay for frequency display */}
           {results?.frequencies && (
-            <div className="absolute top-6 left-6 z-10 bg-white/90 dark:bg-bg-dark-panel/90 backdrop-blur-sm px-4 py-3 rounded-xl border border-border-light dark:border-border-dark shadow-lg">
+            <div className="absolute top-6 left-6 z-10 bg-white/90 dark:bg-bg-dark-panel/90 backdrop-blur-sm px-4 py-3 rounded-xl border border-unsaac-red/20 dark:border-brand-navy/30 shadow-lg">
               <div className="flex items-center gap-3">
-                <div className="w-2 h-2 rounded-full bg-brand-magenta animate-pulse"></div>
-                <h2 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em]">Mode {selectedMode + 1}</h2>
+                <div className="w-2 h-2 rounded-full bg-unsaac-red animate-pulse"></div>
+                <h2 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em]">Modo {selectedMode + 1}</h2>
               </div>
               <div className="flex gap-4 font-mono mt-2">
-                <span className="text-xs font-bold text-brand-magenta">{formatFreq(results.frequencies[selectedMode])} Hz</span>
+                <span className="text-xs font-bold text-unsaac-red">{formatFreq(results.frequencies[selectedMode])} Hz</span>
                 <span className="text-xs font-bold text-gray-400">{results.frequencies[selectedMode] > 1e-9 ? (1 / results.frequencies[selectedMode]).toFixed(4) : "∞"} s</span>
               </div>
             </div>

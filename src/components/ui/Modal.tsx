@@ -1,4 +1,5 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 interface ModalProps {
@@ -9,7 +10,10 @@ interface ModalProps {
 }
 
 const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }) => {
+  const [mounted, setMounted] = useState(false);
+
   useEffect(() => {
+    setMounted(true);
     if (isOpen) {
       document.body.style.overflow = 'hidden';
     } else {
@@ -20,29 +24,38 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }) => {
     };
   }, [isOpen]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+  return createPortal(
+    <div className="fixed inset-0 isolate z-[99999] flex items-center justify-center">
       <div 
-        className="bg-bg-light dark:bg-bg-dark w-full max-w-md rounded-2xl shadow-2xl border border-border-light dark:border-border-dark flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200"
+        className="fixed inset-0 bg-black/60 backdrop-blur-md transition-opacity animate-in fade-in duration-300" 
+        onClick={onClose}
+      />
+      
+      <div 
+        className="relative bg-white dark:bg-bg-dark-panel w-full max-w-md mx-4 rounded-[2.5rem] shadow-2xl border border-border-light dark:border-border-dark flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between p-4 border-b border-border-light dark:border-border-dark">
-          <h3 className="text-lg font-bold text-text-light dark:text-text-dark">{title}</h3>
+        <div className="flex items-center justify-between p-6 border-b border-border-light dark:border-border-dark bg-gray-50/50 dark:bg-black/20">
+          <h3 className="text-sm font-display font-black text-gray-900 dark:text-white uppercase tracking-[0.2em]">
+            {title}
+          </h3>
           <button 
             onClick={onClose}
-            className="p-1 text-text-light/40 hover:text-text-light dark:hover:text-text-dark rounded-full hover:bg-text-light/5 dark:hover:bg-text-dark/5 transition-colors"
+            className="p-2 text-gray-400 hover:text-unsaac-red hover:bg-unsaac-red/5 rounded-xl transition-all active:scale-95 cursor-pointer"
+            aria-label="Cerrar"
           >
             <X size={20} />
           </button>
         </div>
-        <div className="p-6 overflow-y-auto">
+
+        <div className="p-8 overflow-y-auto custom-scrollbar">
           {children}
         </div>
       </div>
-      <div className="absolute inset-0 -z-10" onClick={onClose} />
-    </div>
+    </div>,
+    document.body
   );
 };
 

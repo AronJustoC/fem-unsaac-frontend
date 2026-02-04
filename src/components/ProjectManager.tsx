@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FolderOpen, Save, Zap, Play, ChevronDown, Loader2, Pencil, Trash2, X, Plus, AlertCircle } from 'lucide-react';
 import { authenticatedFetch } from '../lib/api';
+import { supabase } from '../lib/supabase';
+import Auth from './Auth';
+import Modal from './ui/Modal';
 
 interface Project {
   id: string;
@@ -21,6 +24,7 @@ const ProjectManager: React.FC = () => {
   const [projectToRename, setProjectToRename] = useState<Project | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -58,6 +62,11 @@ const ProjectManager: React.FC = () => {
 
   const fetchProjects = async () => {
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setProjects([]);
+        return;
+      }
       setLoading(true);
       const response = await authenticatedFetch('/api/projects');
       
@@ -82,6 +91,11 @@ const ProjectManager: React.FC = () => {
 
   const handleSave = async (asNew: boolean = false) => {
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setShowAuthModal(true);
+        return;
+      }
       setMessage(null);
       const structureData = localStorage.getItem('fem_structure_data');
       
@@ -122,6 +136,11 @@ const ProjectManager: React.FC = () => {
     if (!newProjectName.trim()) return;
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setShowAuthModal(true);
+        return;
+      }
       setSaving(true);
       const structureData = localStorage.getItem('fem_structure_data');
       if (!structureData) return;
@@ -231,8 +250,31 @@ const ProjectManager: React.FC = () => {
     setTimeout(() => setIsOpen(false), 800);
   };
 
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session) {
+        setShowAuthModal(false);
+        fetchProjects();
+      } else {
+        setProjects([]);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
   return (
     <div className="relative" ref={dropdownRef}>
+      <Modal 
+        isOpen={showAuthModal} 
+        onClose={() => setShowAuthModal(false)}
+        title="Acceso de Usuario"
+      >
+        <Auth />
+        <p className="mt-4 text-center text-[10px] text-gray-400 uppercase font-black tracking-widest">
+          Inicia sesión para guardar tus proyectos en la nube
+        </p>
+      </Modal>
       {/* Toggle Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}

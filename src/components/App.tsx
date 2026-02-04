@@ -5,7 +5,6 @@ import Navbar from './Navbar';
 import { ThemeProvider, useTheme } from './ThemeContext';
 import { supabase } from '../lib/supabase';
 import { authenticatedFetch } from '../lib/api';
-import Auth from './Auth';
 import type { Session } from '@supabase/supabase-js';
 
 const AppContent: React.FC = () => {
@@ -28,7 +27,6 @@ const AppContent: React.FC = () => {
   }, []);
 
   const handleVisualize = async (structure: any) => {
-    if (!session) return;
     // Mapear DOF del frontend al formato del backend
     const mapDofToBackend = (dof: string): string => {
       const mapping: Record<string, string> = {
@@ -71,14 +69,6 @@ const AppContent: React.FC = () => {
       setLoading(false);
     }
   };
-
-  if (!session) {
-    return (
-      <div className="min-h-screen bg-bg-light dark:bg-bg-dark flex items-center justify-center p-4">
-        <Auth />
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-bg-light dark:bg-bg-dark transition-all duration-500 font-sans">

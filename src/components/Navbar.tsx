@@ -1,17 +1,35 @@
-import React from "react";
-import { Sun, Moon, LogOut } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Sun, Moon, LogIn, LogOut } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { supabase } from "../lib/supabase";
 import ProjectManager from "./ProjectManager";
+import Modal from "./ui/Modal";
+import Auth from "./Auth";
 
 const Navbar: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
+  const [session, setSession] = useState<any>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) setIsAuthModalOpen(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
   };
 
   return (
+
     <nav className="bg-bg-light/80 dark:bg-bg-dark/80 backdrop-blur-md border-b border-border-light dark:border-border-dark px-6 py-4 sticky top-0 z-50 transition-all duration-300">
       <div className="flex justify-between items-center mx-auto max-w-screen-2xl">
         <a href="/" className="flex items-center gap-3 group">
@@ -78,13 +96,31 @@ const Navbar: React.FC = () => {
             {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
           </button>
 
-          <button
-            onClick={handleLogout}
-            className="p-2.5 rounded-xl border border-border-light dark:border-border-dark bg-white dark:bg-bg-dark-panel text-unsaac-red hover:bg-unsaac-red/5 dark:hover:bg-unsaac-red/10 transition-all active:scale-95 shadow-sm"
-            title="Cerrar Sesión"
+          {session ? (
+            <button
+              onClick={handleLogout}
+              className="p-2.5 rounded-xl border border-border-light dark:border-border-dark bg-white dark:bg-bg-dark-panel text-unsaac-red hover:bg-unsaac-red/5 dark:hover:bg-unsaac-red/10 transition-all active:scale-95 shadow-sm"
+              title="Cerrar Sesión"
+            >
+              <LogOut size={18} />
+            </button>
+          ) : (
+            <button
+              onClick={() => setIsAuthModalOpen(true)}
+              className="p-2.5 rounded-xl border border-border-light dark:border-border-dark bg-white dark:bg-bg-dark-panel text-unsaac-gold hover:bg-unsaac-gold/5 dark:hover:bg-unsaac-gold/10 transition-all active:scale-95 shadow-sm"
+              title="Iniciar Sesión"
+            >
+              <LogIn size={18} />
+            </button>
+          )}
+
+          <Modal 
+            isOpen={isAuthModalOpen} 
+            onClose={() => setIsAuthModalOpen(false)}
+            title="Acceso de Usuario"
           >
-            <LogOut size={18} />
-          </button>
+            <Auth />
+          </Modal>
         </div>
       </div>
     </nav>

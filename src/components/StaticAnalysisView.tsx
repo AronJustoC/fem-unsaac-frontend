@@ -132,7 +132,7 @@ const StaticAnalysisView: React.FC = () => {
     <div className="h-full w-full overflow-hidden flex flex-col-reverse lg:flex-row font-sans relative bg-white dark:bg-bg-dark">
       <div className="fixed inset-0 bg-grid-pattern pointer-events-none opacity-20 z-0"></div>
 
-      <div className="relative z-40 w-full lg:w-[380px] xl:w-[420px] h-[35vh] lg:h-full flex flex-col bg-white/80 dark:bg-[#0B0F1A]/90 backdrop-blur-xl border-t lg:border-t-0 lg:border-r border-border-light dark:border-border-dark shrink-0">
+      <div className="relative z-40 w-full lg:w-[380px] xl:w-[420px] h-[35vh] lg:h-full flex flex-col bg-white/80 dark:bg-[#0B0F1A]/90 backdrop-blur-xl border-t lg:border-t-0 lg:border-r border-border-light dark:border-border-dark shrink-0 overflow-hidden">
         <div className="shrink-0 p-5 lg:p-6 border-b border-border-light dark:border-border-dark">
           <div className="space-y-4 lg:space-y-6">
             <div className="flex items-start justify-between">
@@ -197,7 +197,7 @@ const StaticAnalysisView: React.FC = () => {
         </div>
 
         {/* RESULTS DATA - Scrollable */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar px-6 pb-24 lg:pb-6 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-6 pb-24 lg:pb-6 space-y-4">
           {showTables === 'displacements' && (
             results?.displacements ? Object.entries(results.displacements).map(([nodeId, disp]: [string, any]) => (
               <div key={nodeId} className="premium-card p-4 group">

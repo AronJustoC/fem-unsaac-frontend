@@ -281,15 +281,15 @@ const ModalAnalysisView: React.FC = () => {
           </div>
         </div>
 
-        <div className="shrink-0 px-6 py-4">
+        <div className="shrink-0 px-3 py-2 lg:px-6 lg:py-4">
           <div className="flex p-1 bg-gray-100/50 dark:bg-black/20 rounded-2xl border border-border-light dark:border-border-dark">
-            <div className="flex-1 py-2.5 px-2 text-[10px] font-bold uppercase tracking-tight rounded-xl bg-white dark:bg-bg-dark text-accent-primary shadow-sm ring-1 ring-black/5 dark:ring-white/5 text-center font-display">
+            <div className="flex-1 py-2 px-2 text-[9px] lg:text-[10px] font-bold uppercase tracking-tight rounded-xl bg-white dark:bg-bg-dark text-accent-primary shadow-sm ring-1 ring-black/5 dark:ring-white/5 text-center font-display">
               Vibration Modes
             </div>
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-6 py-4 pb-24 lg:pb-6 space-y-3">
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 lg:px-6 py-2 lg:py-4 pb-6 space-y-2 lg:space-y-3">
           {results?.frequencies ? (
             results.frequencies.map((freq: number, idx: number) => (
               <button
@@ -332,7 +332,7 @@ const ModalAnalysisView: React.FC = () => {
       </div>
 
       {/* RIGHT PANEL - 3D Visualization */}
-      <div className="relative z-10 flex-1 p-4 lg:p-8 flex flex-col overflow-hidden bg-white dark:bg-bg-dark h-[65vh] lg:h-full">
+      <div className="relative z-10 flex-1 p-4 lg:p-8 flex flex-col overflow-hidden bg-white dark:bg-bg-dark h-[55vh] lg:h-full">
         <div className="bg-white/80 dark:bg-bg-dark-panel/90 backdrop-blur-md rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-unsaac-gold/30 group h-full relative">
           {results?.frequencies && (
             <div className="absolute top-6 left-6 z-10 p-4 lg:p-5 premium-card-inner backdrop-blur-xl border-accent-primary/20 shadow-2xl animate-in fade-in slide-in-from-top-4 duration-500">

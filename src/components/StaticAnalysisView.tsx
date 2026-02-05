@@ -132,13 +132,13 @@ const StaticAnalysisView: React.FC = () => {
     <div className="h-full w-full overflow-hidden flex flex-col-reverse lg:flex-row font-sans relative bg-white dark:bg-bg-dark">
       <div className="fixed inset-0 bg-grid-pattern pointer-events-none opacity-20 z-0"></div>
 
-      <div className="relative z-40 w-full lg:w-[380px] xl:w-[420px] h-[35vh] lg:h-full flex flex-col bg-white/80 dark:bg-[#0B0F1A]/90 backdrop-blur-xl border-t lg:border-t-0 lg:border-r border-border-light dark:border-border-dark shrink-0 overflow-hidden">
-        <div className="shrink-0 p-5 lg:p-6 border-b border-border-light dark:border-border-dark">
-          <div className="space-y-4 lg:space-y-6">
+      <div className="relative z-40 w-full lg:w-[380px] xl:w-[420px] h-[45vh] lg:h-full flex flex-col bg-white/80 dark:bg-[#0B0F1A]/90 backdrop-blur-xl border-t lg:border-t-0 lg:border-r border-border-light dark:border-border-dark shrink-0 overflow-hidden">
+        <div className="shrink-0 p-3 lg:p-6 border-b border-border-light dark:border-border-dark">
+          <div className="space-y-2 lg:space-y-6">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[9px] text-accent-primary font-bold uppercase tracking-[0.2em] mb-1 font-mono">Structural Engine</p>
-                <h1 className="text-xl lg:text-2xl font-display font-black text-gray-900 dark:text-white uppercase tracking-tighter leading-none">
+                <p className="text-[8px] lg:text-[9px] text-accent-primary font-bold uppercase tracking-[0.2em] mb-1 font-mono">Structural Engine</p>
+                <h1 className="text-base lg:text-2xl font-display font-black text-gray-900 dark:text-white uppercase tracking-tighter leading-none">
                   Static <span className="text-accent-primary">Analysis</span>
                 </h1>
               </div>
@@ -146,18 +146,18 @@ const StaticAnalysisView: React.FC = () => {
             <button
               onClick={runAnalysis}
               disabled={loading || !structure}
-              className="w-full flex items-center justify-center gap-2 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 text-white px-5 py-3 rounded-xl font-display font-bold text-xs uppercase tracking-wider shadow-lg transition-all active:scale-95 cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 text-white px-4 py-2 lg:px-5 lg:py-3 rounded-xl font-display font-bold text-xs uppercase tracking-wider shadow-lg transition-all active:scale-95 cursor-pointer"
             >
-              {loading ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
+              {loading ? <Loader2 className="animate-spin" size={14} /> : <Play size={14} />}
               Compute Analysis
             </button>
           </div>
 
           {/* Scale Slider */}
-          <div className="premium-card-inner p-3 lg:p-4 space-y-2 lg:space-y-3">
+          <div className="premium-card-inner p-2 lg:p-4 space-y-1 lg:space-y-3 mt-2 lg:mt-0">
             <div className="flex items-center justify-between">
-              <label className="text-[9px] lg:text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest font-mono">Deformation Scale</label>
-              <span className="text-[9px] lg:text-[10px] font-mono font-bold text-accent-primary bg-accent-primary/10 px-2 py-0.5 rounded-md">
+              <label className="text-[8px] lg:text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest font-mono">Scale</label>
+              <span className="text-[8px] lg:text-[10px] font-mono font-bold text-accent-primary bg-accent-primary/10 px-2 py-0.5 rounded-md">
                 {scale.toExponential(2)}
               </span>
             </div>
@@ -174,7 +174,7 @@ const StaticAnalysisView: React.FC = () => {
         </div>
 
         {/* TABS */}
-        <div className="shrink-0 px-6 py-4">
+        <div className="shrink-0 px-3 py-2 lg:px-6 lg:py-4">
           <div className="flex p-1 bg-gray-100/50 dark:bg-black/20 rounded-2xl border border-border-light dark:border-border-dark">
             {[
               { id: 'displacements', label: 'Displacements' },
@@ -197,7 +197,7 @@ const StaticAnalysisView: React.FC = () => {
         </div>
 
         {/* RESULTS DATA - Scrollable */}
-        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-6 pb-24 lg:pb-6 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 lg:px-6 pb-6 space-y-2 lg:space-y-4">
           {showTables === 'displacements' && (
             results?.displacements ? Object.entries(results.displacements).map(([nodeId, disp]: [string, any]) => (
               <div key={nodeId} className="premium-card p-4 group">
@@ -277,7 +277,7 @@ const StaticAnalysisView: React.FC = () => {
       </div>
 
       {/* RIGHT PANEL - 3D Visualization */}
-      <div className="relative z-10 flex-1 p-4 lg:p-8 flex flex-col overflow-hidden bg-white dark:bg-bg-dark h-[65vh] lg:h-full">
+      <div className="relative z-10 flex-1 p-4 lg:p-8 flex flex-col overflow-hidden bg-white dark:bg-bg-dark h-[55vh] lg:h-full">
         <div className="bg-white/80 dark:bg-bg-dark-panel/90 backdrop-blur-md rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-unsaac-gold/30 group h-full relative">
           <GraphicsView 
             data={vizData} 

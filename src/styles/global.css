@@ -1,0 +1,56 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Outfit:wght@100..900&display=swap');
+
+@theme {
+  /* Institutional Colors (UNSAAC) */
+  --color-unsaac-red: #8B0000;
+  --color-unsaac-gold: #DAA520;
+  --color-brand-navy: #003366;
+
+  /* SAP2000 & Engineering Palette (Legacy Support) */
+  --color-brand-blue: #1e90ff;   /* SAP2000 Blue */
+  --color-brand-green: #00ff00;  /* SAP2000 Green */
+  --color-brand-magenta: #ff00ff; /* SAP2000 Magenta */
+  
+  /* Backgrounds & Text */
+  --color-bg-dark: #0B0F1A;
+  --color-bg-dark-panel: #111827;
+  --color-bg-light: #F8FAFC;
+  
+  --color-text-dark: #F9FAFB;
+  --color-text-light: #111827;
+
+  --color-border-dark: #1F2937;
+  --color-border-light: #E2E8F0;
+
+  --color-accent-primary: #3B82F6;
+  --color-accent-secondary: #10B981;
+  --color-accent-danger: #EF4444;
+
+  /* Typography */
+  --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-display: "Outfit", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+.premium-card {
+  @apply bg-white dark:bg-bg-dark-panel border border-border-light dark:border-border-dark rounded-2xl shadow-sm transition-all duration-300 hover:shadow-lg hover:border-accent-primary/30;
+}
+
+.premium-card-inner {
+  @apply bg-gray-50/50 dark:bg-black/20 rounded-xl border border-border-light/50 dark:border-border-dark/50;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 dark:bg-gray-800 rounded-full hover:bg-gray-400 dark:hover:bg-gray-700;
+}

@@ -1,10 +1,5 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "framework": "astro",
-  "env": {
-    "PUBLIC_SUPABASE_URL": "@public_supabase_url",
-    "PUBLIC_SUPABASE_ANON_KEY": "@public_supabase_anon_key",
-    "PUBLIC_API_URL": "@public_api_url"
-  }
+  "framework": "astro"
 }

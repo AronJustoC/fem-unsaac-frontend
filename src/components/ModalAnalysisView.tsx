@@ -218,36 +218,36 @@ const ModalAnalysisView: React.FC = () => {
       <div className="fixed inset-0 bg-grid-pattern pointer-events-none opacity-20 z-0"></div>
 
       <div className="relative z-40 w-full lg:w-[380px] xl:w-[420px] h-[50vh] lg:h-full flex flex-col bg-white/80 dark:bg-[#0B0F1A]/90 backdrop-blur-xl border-t lg:border-t-0 lg:border-r border-border-light dark:border-border-dark shrink-0">
-        <div className="shrink-0 p-5 lg:p-6 border-b border-border-light dark:border-border-dark">
-          <div className="space-y-4 lg:space-y-6">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-[9px] text-accent-primary font-bold uppercase tracking-[0.2em] mb-1 font-mono">
-                  Structural Engine
-                </p>
-                <h1 className="text-xl lg:text-2xl font-display font-black text-gray-900 dark:text-white uppercase tracking-tighter leading-none">
-                  Modal <span className="text-accent-primary">Analysis</span>
-                </h1>
-              </div>
+        <div className="shrink-0 p-2 lg:p-6 border-b border-border-light dark:border-border-dark">
+          {/* Header + Button in one row on mobile */}
+          <div className="flex items-center justify-between gap-2 mb-2 lg:mb-4">
+            <div className="flex-1 min-w-0">
+              <p className="hidden lg:block text-[9px] text-accent-primary font-bold uppercase tracking-[0.2em] mb-1 font-mono">
+                Structural Engine
+              </p>
+              <h1 className="text-sm lg:text-2xl font-display font-black text-gray-900 dark:text-white uppercase tracking-tighter leading-none truncate">
+                Modal <span className="text-accent-primary">Analysis</span>
+              </h1>
             </div>
             <button
               onClick={runAnalysis}
               disabled={loading || !structure}
-              className="w-full flex items-center justify-center gap-2 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 text-white px-5 py-3 rounded-xl font-display font-bold text-xs uppercase tracking-wider shadow-lg transition-all active:scale-95 cursor-pointer"
+              className="shrink-0 flex items-center justify-center gap-1 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 text-white px-2.5 py-1.5 lg:px-5 lg:py-3 rounded-lg lg:rounded-xl font-display font-bold text-[9px] lg:text-xs uppercase tracking-wider shadow-lg transition-all active:scale-95 cursor-pointer"
             >
               {loading ? (
-                <Loader2 className="animate-spin" size={16} />
+                <Loader2 className="animate-spin" size={12} />
               ) : (
-                <Play size={16} />
+                <Play size={12} />
               )}
-              Solve Modal Analysis
+              <span className="hidden sm:inline">Solve</span>
             </button>
           </div>
 
-          <div className="space-y-3 lg:space-y-4 mt-4 lg:mt-6">
-            <div className="premium-card-inner p-3 lg:p-4 flex items-center justify-between">
-              <label className="text-[9px] lg:text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest font-mono">
-                Modes to compute
+          {/* Controls in 2 columns on mobile */}
+          <div className="grid grid-cols-2 gap-1.5 lg:space-y-4 lg:block lg:mt-6">
+            <div className="premium-card-inner p-1.5 lg:p-4 flex items-center justify-between col-span-1">
+              <label className="text-[7px] lg:text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider font-mono">
+                Modes
               </label>
               <input
                 type="number"
@@ -255,17 +255,17 @@ const ModalAnalysisView: React.FC = () => {
                 max="50"
                 value={numModes}
                 onChange={(e) => setNumModes(parseInt(e.target.value) || 1)}
-                className="w-12 lg:w-14 px-1 lg:px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-accent-primary focus:outline-none text-center"
+                className="w-8 lg:w-14 px-1 lg:px-2 py-0.5 lg:py-1 text-[10px] lg:text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded border border-border-light dark:border-border-dark text-accent-primary focus:outline-none text-center"
               />
             </div>
 
-            <div className="premium-card-inner p-3 lg:p-4 space-y-2 lg:space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="text-[9px] lg:text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest font-mono">
-                  Deformation Scale
+            <div className="premium-card-inner p-1.5 lg:p-4 col-span-1 lg:col-span-2">
+              <div className="flex items-center justify-between mb-0.5 lg:mb-2">
+                <label className="text-[7px] lg:text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider font-mono">
+                  Scale
                 </label>
-                <span className="text-[9px] lg:text-[10px] font-mono font-bold text-accent-primary bg-accent-primary/10 px-2 py-0.5 rounded-md">
-                  {scale.toExponential(2)}
+                <span className="text-[7px] lg:text-[10px] font-mono font-bold text-accent-primary bg-accent-primary/10 px-1 py-0.5 rounded">
+                  {scale.toExponential(1)}
                 </span>
               </div>
               <input

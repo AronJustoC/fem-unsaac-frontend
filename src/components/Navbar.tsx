@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Sun, Moon, LogIn, Menu, X, Layout, Activity, BarChart3, ShieldCheck, ChevronRight, User } from "lucide-react";
+import { Sun, Moon, LogIn, Menu, X, Layout, Activity, BarChart3, ShieldCheck, ChevronRight, User, Waves, Radio } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { supabase } from "../lib/supabase";
 import ProjectManager from "./ProjectManager";
@@ -34,6 +34,8 @@ const Navbar: React.FC = () => {
     { name: "Editor", shortName: "Editor", href: "/", icon: Layout },
     { name: "Análisis Estático", shortName: "Estático", href: "/analisis-estatico", icon: BarChart3 },
     { name: "Análisis Modal", shortName: "Modal", href: "/analisis-modal", icon: Activity },
+    { name: "Respuesta Armónica", shortName: "Armónica", href: "/analisis-armonico", icon: Waves },
+    { name: "Procesamiento de Señales", shortName: "Señales", href: "/procesamiento-senales", icon: Radio },
   ];
 
   return (
@@ -116,7 +118,7 @@ const Navbar: React.FC = () => {
           <button
             onClick={() => setIsMenuOpen(true)}
             className="lg:hidden p-2.5 rounded-full hover:bg-gray-100 dark:hover:bg-white/5 text-gray-900 dark:text-white transition-all active:scale-90 group relative"
-            aria-label="Menu"
+            aria-label="Abrir menú"
           >
             <Menu size={22} strokeWidth={2} />
           </button>

@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useRef } from "react";
 import GraphicsView from "./GraphicsView";
-import { Play, Loader2, Waves, ChevronRight } from "lucide-react";
+import { Play, Loader2, Waves, ChevronRight, Zap } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { authenticatedFetch } from "../lib/api";
+
+const hashString = (value: string) => {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const buildModalCacheKey = (structure: any, numModes: number) =>
+  `modal-analysis:${numModes}:${hashString(JSON.stringify(structure))}`;
 
 const ModalAnalysisView: React.FC = () => {
   const [structure, setStructure] = useState<any>(null);
@@ -14,10 +26,11 @@ const ModalAnalysisView: React.FC = () => {
   const [scaleRange, setScaleRange] = useState({ min: 0, max: 100, step: 1 });
   const [numModes, setNumModes] = useState(12);
   const [selectedMode, setSelectedMode] = useState<number>(0);
+  const [animationEnabled, setAnimationEnabled] = useState(true);
   const { theme } = useTheme();
 
   const vizCache = useRef<Map<string, any>>(new Map());
-  const displacementCache = useRef<Map<string, any>>(new Map());
+  const modalResultCache = useRef<Map<string, any>>(new Map());
 
   const EmptyState = ({ msg }: { msg: string }) => (
     <div className="text-center py-20 text-gray-500 flex flex-col items-center justify-center bg-black/5 dark:bg-black/40 rounded-3xl border border-dashed border-border-light dark:border-border-dark backdrop-blur-sm">
@@ -60,7 +73,6 @@ const ModalAnalysisView: React.FC = () => {
         setResults(null);
         setVizData(null);
         vizCache.current.clear();
-        displacementCache.current.clear();
       } catch (e) {
         console.error("Error parsing", e);
       }
@@ -74,57 +86,85 @@ const ModalAnalysisView: React.FC = () => {
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
+  const prepareModalView = (analysisData: any) => {
+    setResults(analysisData);
+    setVizData(null);
+
+    let optimalScale = scale;
+    if (analysisData.frequencies?.length > 0) {
+      if (structure.nodes?.length > 0 && analysisData.mode_shapes) {
+        const coords = structure.nodes.map((n: any) => n.coords);
+        const size =
+          Math.max(
+            Math.max(...coords.map((c: any) => c[0])) -
+              Math.min(...coords.map((c: any) => c[0])),
+            Math.max(...coords.map((c: any) => c[1])) -
+              Math.min(...coords.map((c: any) => c[1])),
+            Math.max(...coords.map((c: any) => c[2])) -
+              Math.min(...coords.map((c: any) => c[2])),
+          ) || 1.0;
+
+        let maxDisp = 0;
+        Object.values(analysisData.mode_shapes).forEach((shapes: any) => {
+          const d = shapes[0];
+          if (d) {
+            const mag = Math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2);
+            maxDisp = Math.max(maxDisp, mag);
+          }
+        });
+
+        if (maxDisp > 0) {
+          optimalScale = (size * 0.15) / maxDisp;
+          const order = Math.pow(10, Math.floor(Math.log10(optimalScale)));
+          setScaleRange({
+            min: 0,
+            max: optimalScale * 2.5,
+            step: order / 20,
+          });
+        }
+      }
+
+      setSelectedMode(0);
+      setScale(optimalScale);
+    }
+  };
+
   const runAnalysis = async () => {
     if (!structure) return;
     setLoading(true);
     vizCache.current.clear();
+    const cacheKey = buildModalCacheKey(structure, numModes);
+
     try {
+      const inMemory = modalResultCache.current.get(cacheKey);
+      let cachedAnalysis = inMemory;
+      const persisted = !inMemory ? sessionStorage.getItem(cacheKey) : null;
+      if (!cachedAnalysis && persisted) {
+        try {
+          cachedAnalysis = JSON.parse(persisted);
+        } catch {
+          sessionStorage.removeItem(cacheKey);
+        }
+      }
+
+      if (cachedAnalysis) {
+        prepareModalView(cachedAnalysis);
+        return;
+      }
+
       const resAnalysis = await authenticatedFetch("/api/analysis/modal", {
         method: "POST",
         body: JSON.stringify({ structure, num_modes: numModes }),
       });
       if (!resAnalysis.ok) throw new Error("Kernel failure");
       const analysisData = await resAnalysis.json();
-      setResults(analysisData);
-
-      let optimalScale = scale;
-      if (analysisData.frequencies?.length > 0) {
-        if (structure.nodes?.length > 0 && analysisData.mode_shapes) {
-          const coords = structure.nodes.map((n: any) => n.coords);
-          const size =
-            Math.max(
-              Math.max(...coords.map((c: any) => c[0])) -
-                Math.min(...coords.map((c: any) => c[0])),
-              Math.max(...coords.map((c: any) => c[1])) -
-                Math.min(...coords.map((c: any) => c[1])),
-              Math.max(...coords.map((c: any) => c[2])) -
-                Math.min(...coords.map((c: any) => c[2])),
-            ) || 1.0;
-
-          let maxDisp = 0;
-          Object.values(analysisData.mode_shapes).forEach((shapes: any) => {
-            const d = shapes[0];
-            if (d) {
-              const mag = Math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2);
-              maxDisp = Math.max(maxDisp, mag);
-            }
-          });
-
-          if (maxDisp > 0) {
-            optimalScale = (size * 0.15) / maxDisp;
-            const order = Math.pow(10, Math.floor(Math.log10(optimalScale)));
-            setScaleRange({
-              min: 0,
-              max: optimalScale * 2.5,
-              step: order / 20,
-            });
-          }
-        }
-
-        setSelectedMode(0);
-        setScale(optimalScale);
-        await updateVisualization(0, optimalScale, analysisData);
+      modalResultCache.current.set(cacheKey, analysisData);
+      try {
+        sessionStorage.setItem(cacheKey, JSON.stringify(analysisData));
+      } catch {
+        // La caché persistente es opcional; si excede cuota se mantiene la caché en memoria.
       }
+      prepareModalView(analysisData);
     } catch (err: any) {
       console.error("Analysis error:", err.message);
     } finally {
@@ -140,7 +180,7 @@ const ModalAnalysisView: React.FC = () => {
     const activeResults = currentResults || results;
     if (!activeResults || !structure) return;
 
-    const baseCacheKey = `${modeIndex}-${theme}`;
+    const baseCacheKey = `${modeIndex}-${theme}-${numModes}-fast-viz`;
     if (vizCache.current.has(baseCacheKey)) {
       const baseViz = vizCache.current.get(baseCacheKey);
       const scaledData = applyClientScaling(baseViz, currentScale);
@@ -151,7 +191,7 @@ const ModalAnalysisView: React.FC = () => {
     setVizLoading(true);
     try {
       const resViz = await authenticatedFetch(
-        `/api/visualization/modal-results?theme=${theme}&scale=1.0&mode_index=${modeIndex}&num_modes=${numModes}`,
+        `/api/visualization/modal-results?theme=${theme}&scale=1.0&mode_index=${modeIndex}&num_modes=${numModes}&animate=false&detail=2`,
         {
           method: "POST",
           body: JSON.stringify(structure),
@@ -173,9 +213,14 @@ const ModalAnalysisView: React.FC = () => {
 
   const applyClientScaling = (vizData: any, scale: number) => {
     if (!vizData || !vizData.data) return vizData;
-    const newViz = JSON.parse(JSON.stringify(vizData));
-    newViz.data.forEach((trace: any) => {
-      if (trace.customdata && trace.mode === "lines") {
+    return {
+      ...vizData,
+      frames: undefined,
+      data: vizData.data.map((trace: any) => {
+        if (!trace.customdata || !String(trace.mode ?? "").includes("lines")) {
+          return trace;
+        }
+
         const n = trace.customdata.length;
         const newX = new Array(n);
         const newY = new Array(n);
@@ -193,12 +238,14 @@ const ModalAnalysisView: React.FC = () => {
             newZ[i] = row[2] + row[5] * scale;
           }
         }
-        trace.x = newX;
-        trace.y = newY;
-        trace.z = newZ;
-      }
-    });
-    return newViz;
+        return {
+          ...trace,
+          x: newX,
+          y: newY,
+          z: newZ,
+        };
+      }),
+    };
   };
 
   useEffect(() => {
@@ -278,6 +325,24 @@ const ModalAnalysisView: React.FC = () => {
                 className="w-full h-1 bg-gray-200 dark:bg-gray-800 rounded-lg appearance-none cursor-pointer accent-accent-primary"
               />
             </div>
+
+            <button
+              type="button"
+              onClick={() => setAnimationEnabled((prev) => !prev)}
+              className={`premium-card-inner p-1.5 lg:p-4 col-span-2 flex items-center justify-between cursor-pointer transition-all ${
+                animationEnabled
+                  ? "border-accent-secondary/40 bg-accent-secondary/10 text-accent-secondary"
+                  : "text-gray-500 dark:text-gray-400"
+              }`}
+            >
+              <span className="flex items-center gap-2 text-[7px] lg:text-[10px] font-bold uppercase tracking-wider font-mono">
+                <Zap size={12} />
+                Animación rápida
+              </span>
+              <span className="text-[8px] lg:text-[10px] font-mono font-black uppercase">
+                {animationEnabled ? "Cliente ON" : "Pausa"}
+              </span>
+            </button>
           </div>
         </div>
 
@@ -370,6 +435,12 @@ const ModalAnalysisView: React.FC = () => {
             loading={loading || vizLoading}
             error={null}
             className="h-full w-full bg-transparent! dark:bg-transparent!"
+            animation={{
+              enabled: animationEnabled && Boolean(vizData) && !loading && !vizLoading,
+              scale,
+              fps: 24,
+              speedHz: 0.65,
+            }}
           />
         </div>
       </div>

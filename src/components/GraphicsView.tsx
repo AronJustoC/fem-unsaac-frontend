@@ -1,12 +1,19 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import { Maximize2, Minimize2, Download, Box, RotateCcw } from "lucide-react";
 import { useTheme } from "./ThemeContext";
+import { getPlotlyTheme } from "../lib/plotly_theme";
 
 interface GraphicsViewProps {
   data: any;
   loading: boolean;
   error: string | null;
   className?: string;
+  animation?: {
+    enabled: boolean;
+    scale: number;
+    fps?: number;
+    speedHz?: number;
+  };
 }
 
 const GraphicsView: React.FC<GraphicsViewProps> = ({
@@ -14,6 +21,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   loading,
   error,
   className,
+  animation,
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -29,27 +37,60 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     });
   }, []);
 
-  const isDark = theme === "dark";
-
   const themeAwareLayout = useMemo(() => {
     if (!data?.layout) return null;
+    const plotTheme = getPlotlyTheme(theme);
 
-    return {
+    const withAxisTheme = (axis: any = {}) => ({
+      ...axis,
+      title: typeof axis.title === "string"
+        ? { text: axis.title, font: { color: plotTheme.text } }
+        : {
+          ...axis.title,
+          font: { ...(axis.title?.font ?? {}), color: axis.title?.font?.color ?? plotTheme.text },
+        },
+      gridcolor: axis.gridcolor ?? plotTheme.grid,
+      zerolinecolor: axis.zerolinecolor ?? plotTheme.zeroLine,
+      linecolor: axis.linecolor ?? plotTheme.axisLine,
+      tickfont: { ...(axis.tickfont ?? {}), color: axis.tickfont?.color ?? plotTheme.subtleText },
+      color: axis.color ?? plotTheme.mutedText,
+      showspikes: false,
+    });
+
+    const nextLayout: any = {
       ...data.layout,
       autosize: true,
-      margin: { l: 0, r: 0, b: 0, t: 0 },
-      paper_bgcolor: "rgba(0,0,0,0)",
-      plot_bgcolor: "rgba(0,0,0,0)",
-      scene: {
-        ...data.layout.scene,
-        xaxis: { ...data.layout.scene?.xaxis, showspikes: false },
-        yaxis: { ...data.layout.scene?.yaxis, showspikes: false },
-        zaxis: { ...data.layout.scene?.zaxis, showspikes: false },
+      margin: data.layout.margin ?? { l: 0, r: 0, b: 0, t: 0 },
+      paper_bgcolor: plotTheme.paperBackground,
+      plot_bgcolor: plotTheme.plotBackground,
+      font: { ...(data.layout.font ?? {}), color: plotTheme.mutedText, family: "Inter, Arial, sans-serif" },
+      hoverlabel: {
+        bgcolor: plotTheme.hoverBackground,
+        bordercolor: plotTheme.hoverBorder,
+        font: { color: plotTheme.text },
       },
-      uirevision: 'true',
-      hovermode: 'closest',
+      uirevision: `graphics-${theme}`,
+      hovermode: data.layout.hovermode ?? "closest",
     };
-  }, [data?.layout?.scene?.xaxis?.range, isDark]);
+
+    Object.keys(nextLayout).forEach((key) => {
+      if (/^[xy]axis\d*$/.test(key)) {
+        nextLayout[key] = withAxisTheme(nextLayout[key]);
+      }
+    });
+
+    if (data.layout.scene) {
+      nextLayout.scene = {
+        ...data.layout.scene,
+        bgcolor: data.layout.scene.bgcolor ?? plotTheme.plotBackground,
+        xaxis: withAxisTheme(data.layout.scene?.xaxis),
+        yaxis: withAxisTheme(data.layout.scene?.yaxis),
+        zaxis: withAxisTheme(data.layout.scene?.zaxis),
+      };
+    }
+
+    return nextLayout;
+  }, [data, theme]);
 
 
   const toggleFullscreen = () => {
@@ -92,6 +133,86 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       }
     }
   };
+
+  useEffect(() => {
+    if (!animation?.enabled || !data?.data || !PlotComponent) return;
+
+    const plotlyLib = (window as any).Plotly;
+    const plotElement = plotRef.current?.el;
+    if (!plotlyLib || !plotElement) return;
+
+    const animatedTraces = data.data
+      .map((trace: any, index: number) => ({ trace, index }))
+      .filter(({ trace }: any) => (
+        trace?.customdata
+        && Array.isArray(trace.customdata)
+        && String(trace.mode ?? "").includes("lines")
+      ));
+
+    if (animatedTraces.length === 0) return;
+
+    let frameId = 0;
+    let lastFrame = 0;
+    const fps = Math.max(12, Math.min(animation.fps ?? 24, 60));
+    const frameMs = 1000 / fps;
+    const speedHz = animation.speedHz ?? 0.65;
+    const startedAt = performance.now();
+
+    const buildScaledCoordinates = (customdata: any[], factor: number) => {
+      const n = customdata.length;
+      const x = new Array(n);
+      const y = new Array(n);
+      const z = new Array(n);
+
+      for (let i = 0; i < n; i++) {
+        const row = customdata[i];
+        if (!row || row[0] === null) {
+          x[i] = null;
+          y[i] = null;
+          z[i] = null;
+        } else {
+          x[i] = row[0] + row[3] * factor;
+          y[i] = row[1] + row[4] * factor;
+          z[i] = row[2] + row[5] * factor;
+        }
+      }
+
+      return { x, y, z };
+    };
+
+    const tick = (now: number) => {
+      if (now - lastFrame >= frameMs) {
+        lastFrame = now;
+        const elapsedSeconds = (now - startedAt) / 1000;
+        const factor = Math.cos(2 * Math.PI * speedHz * elapsedSeconds) * animation.scale;
+        const xUpdates: any[] = [];
+        const yUpdates: any[] = [];
+        const zUpdates: any[] = [];
+        const indices: number[] = [];
+
+        animatedTraces.forEach(({ trace, index }: any) => {
+          const next = buildScaledCoordinates(trace.customdata, factor);
+          xUpdates.push(next.x);
+          yUpdates.push(next.y);
+          zUpdates.push(next.z);
+          indices.push(index);
+        });
+
+        try {
+          plotlyLib.restyle(plotElement, { x: xUpdates, y: yUpdates, z: zUpdates }, indices);
+        } catch {
+          // Plotly puede no estar listo durante el primer montaje; el siguiente frame reintenta.
+        }
+      }
+
+      frameId = requestAnimationFrame(tick);
+    };
+
+    frameId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(frameId);
+    };
+  }, [animation?.enabled, animation?.fps, animation?.scale, animation?.speedHz, data, PlotComponent]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -185,7 +306,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
           ref={plotRef}
           data={data.data}
           layout={themeAwareLayout}
-          frames={data.frames}
+          frames={animation?.enabled ? undefined : data.frames}
           useResizeHandler={true}
           style={{ width: "100%", height: isFullscreen ? "100vh" : "100%" }}
           config={{

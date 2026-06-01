@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FolderOpen, Save, Zap, Play, ChevronDown, Loader2, Pencil, Trash2, X, Plus, AlertCircle } from 'lucide-react';
+import { FolderOpen, Save, Zap, Play, ChevronDown, Loader2, Pencil, Trash2, X, Plus } from 'lucide-react';
 import { authenticatedFetch } from '../lib/api';
 import { supabase } from '../lib/supabase';
 import Auth from './Auth';

@@ -1,6 +1,6 @@
 // SignalProcessingPage.tsx - Procesamiento de Señales con Exportación Completa
 // Incluye: PNG, SVG, PDF vectorial, CSV, JSON
-// Basado en VibrationData Toolbox v13.3
+// Compatible con VibrationData/enDAQ; cálculos espectrales pesados vía backend.
 
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
@@ -28,11 +28,12 @@ import {
 import Navbar from './Navbar';
 import { ThemeProvider, useTheme } from './ThemeContext';
 import {
+  computeVibrationDataAnalysis,
   fullBridgeAnalysis,
   parseCSVData,
   calculateSamplingRate,
 } from '../lib/signal_api';
-import type { FullAnalysisResult } from '../lib/signal_api';
+import type { FullAnalysisResult, VibrationDataAnalysisResult, VibrationDataFftSpectrum } from '../lib/signal_api';
 import { getPlotlyTheme } from '../lib/plotly_theme';
 
 // Types
@@ -90,6 +91,8 @@ interface SavedAnalysis {
   samplingRate: number;
   unit: string;
   preprocessMode: PreprocessMode;
+  preprocessModes?: PreprocessMode[];
+  filterParams?: SignalFilterParams;
   fftWindowType: FFTWindowType;
   result: FullAnalysisResult;
 }
@@ -121,12 +124,50 @@ type ViewMode = 'time' | 'fft' | 'psd' | 'waterfall' | 'envelope' | 'integration
 type Channel = 'acc_x' | 'acc_y' | 'acc_z' | 'resultant';
 type ChannelViewMode = 'single' | 'xyz_parallel' | 'all_parallel' | 'xyz_overlay' | 'all_overlay';
 type FFTWindowType = 'rectangular' | 'hann' | 'hamming' | 'blackman' | 'flattop';
-type PreprocessMode = 'none' | 'demean' | 'detrend';
+type PreprocessMode =
+  | 'none'
+  | 'demean'
+  | 'detrend'
+  | 'impact_guard'
+  | 'hampel'
+  | 'mad_despike'
+  | 'median'
+  | 'anti_ski_slope'
+  | 'lowpass'
+  | 'highpass'
+  | 'bandpass'
+  | 'notch'
+  | 'harmonic_notch'
+  | 'moving_average'
+  | 'exponential'
+  | 'savgol';
 type IntegrationOutputMode = 'both' | 'velocity' | 'displacement';
 type DisplacementUnit = 'm' | 'mm' | 'um';
 type PlotCatalogMode = 'time_histories' | 'fft_phase' | 'fft_overall';
 type PlotCatalogStyle = 'publication' | 'platform';
 type PlotCatalogTimeLayout = 'stacked' | 'full_zoom';
+
+type VibrationBackendChannelState = {
+  cacheKey: string;
+  result: VibrationDataAnalysisResult;
+};
+
+interface SignalFilterParams {
+  lowpassCutoffHz: number;
+  highpassCutoffHz: number;
+  bandpassLowHz: number;
+  bandpassHighHz: number;
+  notchFreqHz: number;
+  notchQ: number;
+  harmonicCount: number;
+  medianWindowSamples: number;
+  hampelWindowSamples: number;
+  hampelSigma: number;
+  madThreshold: number;
+  smoothingWindowSamples: number;
+  exponentialAlpha: number;
+  savgolWindowSamples: number;
+}
 
 const FFT_WINDOW_LABELS: Record<FFTWindowType, string> = {
   rectangular: 'Rectangular',
@@ -140,6 +181,73 @@ const PREPROCESS_LABELS: Record<PreprocessMode, string> = {
   none: 'Sin corrección',
   demean: 'Remover media',
   detrend: 'Remover tendencia lineal',
+  impact_guard: 'Anti-golpes Hampel + MAD',
+  hampel: 'Hampel robusto',
+  mad_despike: 'Despiking MAD',
+  median: 'Mediana móvil',
+  anti_ski_slope: 'Anti ski-slope',
+  lowpass: 'Pasa bajo',
+  highpass: 'Pasa alto',
+  bandpass: 'Pasa banda',
+  notch: 'Notch 50/60 Hz',
+  harmonic_notch: 'Notch armónico',
+  moving_average: 'Media móvil',
+  exponential: 'Media exponencial',
+  savgol: 'Savitzky-Golay',
+};
+
+const PREPROCESS_PIPELINE_ORDER: PreprocessMode[] = [
+  'demean',
+  'detrend',
+  'hampel',
+  'mad_despike',
+  'impact_guard',
+  'median',
+  'anti_ski_slope',
+  'highpass',
+  'lowpass',
+  'bandpass',
+  'notch',
+  'harmonic_notch',
+  'moving_average',
+  'exponential',
+  'savgol',
+];
+
+const PREPROCESS_DESCRIPTIONS: Record<PreprocessMode, string> = {
+  none: 'Usa la señal cruda, sin corrección ni suavizado.',
+  demean: 'Centra la señal eliminando el offset DC.',
+  detrend: 'Elimina media y deriva lineal lenta.',
+  impact_guard: 'Detecta golpes/picos con Hampel y MAD, y reemplaza por interpolación robusta.',
+  hampel: 'Reemplaza valores atípicos locales por la mediana de su ventana.',
+  mad_despike: 'Detecta picos globales por desviación absoluta mediana e interpola la zona afectada.',
+  median: 'Suaviza picos aislados con una mediana móvil.',
+  anti_ski_slope: 'Detrend + anti-golpes + pasa alto para reducir energía falsa cerca de 0 Hz.',
+  lowpass: 'Atenúa ruido de alta frecuencia con un IIR local de fase casi cero.',
+  highpass: 'Atenúa deriva lenta y offset residual.',
+  bandpass: 'Conserva solo el rango modal/frecuencial de interés.',
+  notch: 'Elimina una frecuencia estrecha, típicamente 50/60 Hz.',
+  harmonic_notch: 'Elimina la frecuencia de línea y sus armónicos dentro del Nyquist.',
+  moving_average: 'Suavizado simple; útil para visualización, no para preservar impactos.',
+  exponential: 'Suavizado causal rápido con factor alpha.',
+  savgol: 'Suaviza preservando mejor la forma local que la media móvil.',
+};
+
+const DEFAULT_FILTER_PARAMS: SignalFilterParams = {
+  lowpassCutoffHz: 20,
+  highpassCutoffHz: 0.5,
+  bandpassLowHz: 0.5,
+  bandpassHighHz: 20,
+  notchFreqHz: 60,
+  notchQ: 30,
+  harmonicCount: 3,
+  medianWindowSamples: 5,
+  hampelWindowSamples: 11,
+  hampelSigma: 3,
+  madThreshold: 6,
+  smoothingWindowSamples: 9,
+  exponentialAlpha: 0.2,
+  savgolWindowSamples: 11,
 };
 
 const CHANNEL_VIEW_LABELS: Record<ChannelViewMode, string> = {
@@ -203,8 +311,8 @@ const MAX_TIME_PLOT_POINTS = 8_000;
 const MAX_FFT_SAMPLES = 131_072;
 const MIN_FFT_SAMPLES = 256;
 const STANDARD_GRAVITY = 9.80665;
-const VIBRATIONDATA_VELOCITY_FACTOR = 1_000; // m/s -> mm/s
-const VIBRATIONDATA_DISPLACEMENT_FACTOR = 1_000; // m -> mm
+const VIBRATION_BACKEND_BIN_WIDTH_HZ = 1.0;
+const VIBRATION_BACKEND_OVERLAP = 0.5;
 const WORKSPACE_STORAGE_KEY = 'fem_unsaac_signal_workspace_v3';
 const ANALYSIS_STORAGE_KEY = 'fem_unsaac_signal_analysis_cache_v3';
 const MAX_SAVED_ANALYSES = 12;
@@ -329,6 +437,88 @@ const computeStats = (data: number[]) => {
   };
 };
 
+const createEmptyKinematicsData = () => {
+  const emptyStats = computeStats([]);
+  return {
+    accelerationMps2: [] as number[],
+    velocityMps: [] as number[],
+    displacementM: [] as number[],
+    velocityStats: emptyStats,
+    displacementStats: emptyStats,
+    accelerationScale: STANDARD_GRAVITY,
+    driftWarning: false,
+    driftRatio: 0,
+  };
+};
+
+const buildKinematicsDataFromBackend = (result: VibrationDataAnalysisResult | null) => {
+  if (!result) return createEmptyKinematicsData();
+  const histories = result.time_histories;
+  const accelerationSource = histories.acceleration_conditioned_g.length > 0
+    ? histories.acceleration_conditioned_g
+    : histories.acceleration_g;
+  const accelerationMps2 = accelerationSource.map((value) => value * STANDARD_GRAVITY);
+  const velocityMps = histories.velocity_mm_s.map((value) => value / 1_000);
+  const displacementM = histories.displacement_mm.map((value) => value / 1_000);
+  return {
+    accelerationMps2,
+    velocityMps,
+    displacementM,
+    velocityStats: computeStats(velocityMps),
+    displacementStats: computeStats(displacementM),
+    accelerationScale: STANDARD_GRAVITY,
+    driftWarning: Boolean(histories.drift?.warning),
+    driftRatio: Number(histories.drift?.drift_ratio ?? 0),
+  };
+};
+
+const buildVibrationSeriesFromBackend = (
+  result: VibrationDataAnalysisResult | null,
+  historyZoomRange: [number, number]
+) => {
+  if (!result) {
+    return {
+      full: { time: [] as number[], accelerationG: [] as number[], velocityMmS: [] as number[], displacementMm: [] as number[] },
+      zoom: { time: [] as number[], accelerationG: [] as number[], velocityMmS: [] as number[], displacementMm: [] as number[] },
+    };
+  }
+  const histories = result.time_histories;
+  const full = {
+    time: histories.time,
+    accelerationG: histories.acceleration_g,
+    velocityMmS: histories.velocity_mm_s,
+    displacementMm: histories.displacement_mm,
+  };
+  const { startIdx, endIdx } = getTimeWindowIndices(full.time, historyZoomRange);
+  const hasZoom = full.time.length > 0 && endIdx >= startIdx;
+  return {
+    full,
+    zoom: {
+      time: hasZoom ? full.time.slice(startIdx, endIdx + 1) : [],
+      accelerationG: hasZoom ? full.accelerationG.slice(startIdx, endIdx + 1) : [],
+      velocityMmS: hasZoom ? full.velocityMmS.slice(startIdx, endIdx + 1) : [],
+      displacementMm: hasZoom ? full.displacementMm.slice(startIdx, endIdx + 1) : [],
+    },
+  };
+};
+
+const normalizeBackendFftSpectrum = (spectrum?: VibrationDataFftSpectrum) => ({
+  frequencies: spectrum?.frequencies ?? [],
+  amplitudes: spectrum?.amplitudes ?? [],
+  phasesDeg: spectrum?.phases_deg ?? [],
+  engine: spectrum?.engine ?? '',
+  unit: spectrum?.unit ?? '',
+});
+
+const buildVibrationSpectraFromBackend = (
+  result: VibrationDataAnalysisResult | null,
+  source: 'fft' | 'aggregate_fft'
+) => ({
+  acceleration: normalizeBackendFftSpectrum(result?.[source]?.acceleration),
+  velocity: normalizeBackendFftSpectrum(result?.[source]?.velocity),
+  displacement: normalizeBackendFftSpectrum(result?.[source]?.displacement),
+});
+
 const fftInPlace = (real: Float64Array, imag: Float64Array) => {
   const n = real.length;
 
@@ -406,6 +596,443 @@ const preprocessSignal = (data: number[], mode: PreprocessMode): number[] => {
   const slope = (n * sumXY - sumX * sumY) / denominator;
   const intercept = (sumY - slope * sumX) / n;
   return data.map((value, index) => value - (slope * index + intercept));
+};
+
+const clampNumber = (value: number, min: number, max: number) => {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+};
+
+const normalizeOddWindow = (value: number, min = 3, max = 501) => {
+  let window = Math.round(Number.isFinite(value) ? value : min);
+  window = Math.min(max, Math.max(min, window));
+  if (window % 2 === 0) window += window >= max ? -1 : 1;
+  return Math.max(min, window);
+};
+
+const normalizeFilterParams = (value: Partial<SignalFilterParams> | null | undefined): SignalFilterParams => {
+  const source = value ?? {};
+  return {
+    lowpassCutoffHz: clampNumber(Number(source.lowpassCutoffHz ?? DEFAULT_FILTER_PARAMS.lowpassCutoffHz), 0.001, 100_000),
+    highpassCutoffHz: clampNumber(Number(source.highpassCutoffHz ?? DEFAULT_FILTER_PARAMS.highpassCutoffHz), 0, 100_000),
+    bandpassLowHz: clampNumber(Number(source.bandpassLowHz ?? DEFAULT_FILTER_PARAMS.bandpassLowHz), 0, 100_000),
+    bandpassHighHz: clampNumber(Number(source.bandpassHighHz ?? DEFAULT_FILTER_PARAMS.bandpassHighHz), 0.001, 100_000),
+    notchFreqHz: clampNumber(Number(source.notchFreqHz ?? DEFAULT_FILTER_PARAMS.notchFreqHz), 0.001, 100_000),
+    notchQ: clampNumber(Number(source.notchQ ?? DEFAULT_FILTER_PARAMS.notchQ), 1, 1_000),
+    harmonicCount: Math.round(clampNumber(Number(source.harmonicCount ?? DEFAULT_FILTER_PARAMS.harmonicCount), 1, 20)),
+    medianWindowSamples: normalizeOddWindow(Number(source.medianWindowSamples ?? DEFAULT_FILTER_PARAMS.medianWindowSamples), 3, 501),
+    hampelWindowSamples: normalizeOddWindow(Number(source.hampelWindowSamples ?? DEFAULT_FILTER_PARAMS.hampelWindowSamples), 3, 501),
+    hampelSigma: clampNumber(Number(source.hampelSigma ?? DEFAULT_FILTER_PARAMS.hampelSigma), 0.5, 20),
+    madThreshold: clampNumber(Number(source.madThreshold ?? DEFAULT_FILTER_PARAMS.madThreshold), 1, 50),
+    smoothingWindowSamples: normalizeOddWindow(Number(source.smoothingWindowSamples ?? DEFAULT_FILTER_PARAMS.smoothingWindowSamples), 3, 501),
+    exponentialAlpha: clampNumber(Number(source.exponentialAlpha ?? DEFAULT_FILTER_PARAMS.exponentialAlpha), 0.001, 1),
+    savgolWindowSamples: normalizeOddWindow(Number(source.savgolWindowSamples ?? DEFAULT_FILTER_PARAMS.savgolWindowSamples), 5, 501),
+  };
+};
+
+const sanitizeSignalValues = (data: number[]) => {
+  const values = new Array<number>(data.length);
+  let lastFinite = 0;
+  for (let i = 0; i < data.length; i++) {
+    const value = data[i];
+    if (Number.isFinite(value)) {
+      values[i] = value;
+      lastFinite = value;
+    } else {
+      values[i] = lastFinite;
+    }
+  }
+  return values;
+};
+
+const medianOfSorted = (values: number[]) => {
+  if (values.length === 0) return 0;
+  const mid = Math.floor(values.length / 2);
+  return values.length % 2 === 0 ? (values[mid - 1] + values[mid]) / 2 : values[mid];
+};
+
+const medianOf = (values: number[]) => medianOfSorted(values.slice().sort((a, b) => a - b));
+
+const rollingMedianFilter = (data: number[], windowSamples: number) => {
+  const values = sanitizeSignalValues(data);
+  const n = values.length;
+  if (n < 3) return values;
+  const window = Math.min(normalizeOddWindow(windowSamples), n % 2 === 0 ? n - 1 : n);
+  const radius = Math.floor(window / 2);
+  const output = new Array<number>(n);
+
+  for (let i = 0; i < n; i++) {
+    const start = Math.max(0, i - radius);
+    const end = Math.min(n, i + radius + 1);
+    output[i] = medianOf(values.slice(start, end));
+  }
+
+  return output;
+};
+
+const interpolateMaskedSamples = (values: number[], mask: boolean[]) => {
+  const n = values.length;
+  const output = values.slice();
+  let i = 0;
+
+  while (i < n) {
+    if (!mask[i]) {
+      i++;
+      continue;
+    }
+
+    const runStart = i;
+    while (i < n && mask[i]) i++;
+    const runEnd = i - 1;
+    const left = runStart - 1;
+    const right = i;
+
+    if (left >= 0 && right < n && !mask[left] && !mask[right]) {
+      const leftValue = values[left];
+      const rightValue = values[right];
+      const span = right - left;
+      for (let j = runStart; j <= runEnd; j++) {
+        const ratio = (j - left) / span;
+        output[j] = leftValue + (rightValue - leftValue) * ratio;
+      }
+    } else if (left >= 0 && !mask[left]) {
+      for (let j = runStart; j <= runEnd; j++) output[j] = values[left];
+    } else if (right < n && !mask[right]) {
+      for (let j = runStart; j <= runEnd; j++) output[j] = values[right];
+    } else {
+      const fallback = medianOf(values);
+      for (let j = runStart; j <= runEnd; j++) output[j] = fallback;
+    }
+  }
+
+  return output;
+};
+
+const hampelFilter = (data: number[], windowSamples: number, sigma = 3) => {
+  const values = sanitizeSignalValues(data);
+  const n = values.length;
+  if (n < 3) return values;
+  const window = Math.min(normalizeOddWindow(windowSamples), n % 2 === 0 ? n - 1 : n);
+  const radius = Math.floor(window / 2);
+  const output = values.slice();
+
+  for (let i = 0; i < n; i++) {
+    const start = Math.max(0, i - radius);
+    const end = Math.min(n, i + radius + 1);
+    const local = values.slice(start, end).sort((a, b) => a - b);
+    const localMedian = medianOfSorted(local);
+    const deviations = local.map((value) => Math.abs(value - localMedian)).sort((a, b) => a - b);
+    const mad = medianOfSorted(deviations);
+    const robustSigma = 1.4826 * mad;
+    const tolerance = robustSigma > 1e-15 ? sigma * robustSigma : 0;
+
+    if (tolerance > 0 && Math.abs(values[i] - localMedian) > tolerance) {
+      output[i] = localMedian;
+    }
+  }
+
+  return output;
+};
+
+const madDespikeFilter = (data: number[], threshold = 6) => {
+  const values = sanitizeSignalValues(data);
+  if (values.length < 3) return values;
+  const globalMedian = medianOf(values);
+  const deviations = values.map((value) => Math.abs(value - globalMedian));
+  const mad = medianOf(deviations);
+  const robustSigma = 1.4826 * mad;
+  if (robustSigma <= 1e-15) return values;
+  const mask = values.map((value) => Math.abs(value - globalMedian) > threshold * robustSigma);
+  return interpolateMaskedSamples(values, mask);
+};
+
+const movingAverageFilter = (data: number[], windowSamples: number) => {
+  const values = sanitizeSignalValues(data);
+  const n = values.length;
+  if (n < 2) return values;
+  const window = Math.min(normalizeOddWindow(windowSamples), n % 2 === 0 ? n - 1 : n);
+  const radius = Math.floor(window / 2);
+  const output = new Array<number>(n);
+
+  for (let i = 0; i < n; i++) {
+    const start = Math.max(0, i - radius);
+    const end = Math.min(n, i + radius + 1);
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += values[j];
+    output[i] = sum / Math.max(1, end - start);
+  }
+
+  return output;
+};
+
+const exponentialSmoothingFilter = (data: number[], alpha: number) => {
+  const values = sanitizeSignalValues(data);
+  const n = values.length;
+  if (n < 2) return values;
+  const boundedAlpha = clampNumber(alpha, 0.001, 1);
+  const output = new Array<number>(n);
+  output[0] = values[0];
+  for (let i = 1; i < n; i++) {
+    output[i] = boundedAlpha * values[i] + (1 - boundedAlpha) * output[i - 1];
+  }
+  return output;
+};
+
+const clampCutoffHz = (cutoffHz: number, fs: number) => {
+  const nyquist = fs / 2;
+  if (!Number.isFinite(cutoffHz) || !Number.isFinite(fs) || fs <= 0 || nyquist <= 0) return 0;
+  return Math.min(Math.max(0, cutoffHz), Math.max(0, nyquist * 0.98));
+};
+
+const applyForwardBackward = (values: number[], filter: (input: number[]) => number[], passes = 1) => {
+  let output = values.slice();
+  for (let pass = 0; pass < Math.max(1, passes); pass++) {
+    output = filter(output);
+    output = filter(output.slice().reverse()).reverse();
+  }
+  return output;
+};
+
+const lowpassFirstOrderBySample = (data: number[], fs: number, cutoffHz: number, passes = 2) => {
+  const values = sanitizeSignalValues(data);
+  const cutoff = clampCutoffHz(cutoffHz, fs);
+  if (values.length < 3 || cutoff <= 0) return values;
+  const dt = 1 / fs;
+  const rc = 1 / (2 * Math.PI * cutoff);
+  const alpha = dt / (rc + dt);
+
+  return applyForwardBackward(values, (input) => {
+    const output = new Array<number>(input.length);
+    output[0] = input[0];
+    for (let i = 1; i < input.length; i++) {
+      output[i] = output[i - 1] + alpha * (input[i] - output[i - 1]);
+    }
+    return output;
+  }, passes);
+};
+
+const highpassFirstOrderBySample = (data: number[], fs: number, cutoffHz: number, passes = 2) => {
+  const values = sanitizeSignalValues(data);
+  const cutoff = clampCutoffHz(cutoffHz, fs);
+  if (values.length < 3 || cutoff <= 0) return values;
+  const dt = 1 / fs;
+  const rc = 1 / (2 * Math.PI * cutoff);
+  const alpha = rc / (rc + dt);
+
+  return applyForwardBackward(values, (input) => {
+    const output = new Array<number>(input.length).fill(0);
+    for (let i = 1; i < input.length; i++) {
+      output[i] = alpha * (output[i - 1] + input[i] - input[i - 1]);
+    }
+    return output;
+  }, passes);
+};
+
+const bandpassFirstOrderBySample = (
+  data: number[],
+  fs: number,
+  lowCutoffHz: number,
+  highCutoffHz: number
+) => {
+  const nyquist = fs / 2;
+  const low = clampNumber(lowCutoffHz, 0, Math.max(0, nyquist * 0.95));
+  const high = clampNumber(highCutoffHz, Math.max(low + 1e-6, 0.001), Math.max(0.001, nyquist * 0.98));
+  return lowpassFirstOrderBySample(highpassFirstOrderBySample(data, fs, low, 2), fs, high, 2);
+};
+
+const applyBiquad = (data: number[], coefficients: { b0: number; b1: number; b2: number; a1: number; a2: number }) => {
+  const output = new Array<number>(data.length).fill(0);
+  let x1 = 0;
+  let x2 = 0;
+  let y1 = 0;
+  let y2 = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const x0 = Number.isFinite(data[i]) ? data[i] : 0;
+    const y0 = coefficients.b0 * x0
+      + coefficients.b1 * x1
+      + coefficients.b2 * x2
+      - coefficients.a1 * y1
+      - coefficients.a2 * y2;
+    output[i] = y0;
+    x2 = x1;
+    x1 = x0;
+    y2 = y1;
+    y1 = y0;
+  }
+
+  return output;
+};
+
+const notchFilterBySample = (data: number[], fs: number, notchHz: number, qualityFactor: number) => {
+  const values = sanitizeSignalValues(data);
+  const cutoff = clampCutoffHz(notchHz, fs);
+  if (values.length < 3 || cutoff <= 0 || cutoff >= fs / 2) return values;
+
+  const w0 = (2 * Math.PI * cutoff) / fs;
+  const cosW0 = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2 * clampNumber(qualityFactor, 1, 1_000));
+  const a0 = 1 + alpha;
+  const coefficients = {
+    b0: 1 / a0,
+    b1: (-2 * cosW0) / a0,
+    b2: 1 / a0,
+    a1: (-2 * cosW0) / a0,
+    a2: (1 - alpha) / a0,
+  };
+
+  return applyForwardBackward(values, (input) => applyBiquad(input, coefficients), 1);
+};
+
+const harmonicNotchFilterBySample = (
+  data: number[],
+  fs: number,
+  notchHz: number,
+  qualityFactor: number,
+  harmonicCount: number
+) => {
+  const nyquist = fs / 2;
+  let output = sanitizeSignalValues(data);
+  const count = Math.round(clampNumber(harmonicCount, 1, 20));
+  for (let harmonic = 1; harmonic <= count; harmonic++) {
+    const frequency = notchHz * harmonic;
+    if (frequency >= nyquist * 0.98) break;
+    output = notchFilterBySample(output, fs, frequency, qualityFactor);
+  }
+  return output;
+};
+
+const savitzkyGolaySmooth = (data: number[], windowSamples: number) => {
+  const values = sanitizeSignalValues(data);
+  const n = values.length;
+  if (n < 5) return values;
+  const window = Math.min(normalizeOddWindow(windowSamples, 5), n % 2 === 0 ? n - 1 : n);
+  const radius = Math.floor(window / 2);
+
+  let s0 = 0;
+  let s2 = 0;
+  let s4 = 0;
+  for (let k = -radius; k <= radius; k++) {
+    const k2 = k * k;
+    s0 += 1;
+    s2 += k2;
+    s4 += k2 * k2;
+  }
+
+  const denominator = s0 * s4 - s2 * s2;
+  if (Math.abs(denominator) < 1e-12) return movingAverageFilter(values, window);
+  const coefficients: number[] = [];
+  for (let k = -radius; k <= radius; k++) {
+    coefficients.push((s4 - s2 * k * k) / denominator);
+  }
+
+  const output = new Array<number>(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = -radius; j <= radius; j++) {
+      const sourceIndex = Math.min(n - 1, Math.max(0, i + j));
+      sum += coefficients[j + radius] * values[sourceIndex];
+    }
+    output[i] = sum;
+  }
+
+  return output;
+};
+
+const applySignalFilterPreset = (
+  data: number[],
+  mode: PreprocessMode,
+  fs: number,
+  params: SignalFilterParams
+): number[] => {
+  if (mode === 'none') return data.slice();
+  if (mode === 'demean' || mode === 'detrend') return preprocessSignal(data, mode);
+
+  const normalizedParams = normalizeFilterParams(params);
+  const cleaned = sanitizeSignalValues(data);
+
+  switch (mode) {
+    case 'hampel':
+      return hampelFilter(cleaned, normalizedParams.hampelWindowSamples, normalizedParams.hampelSigma);
+    case 'mad_despike':
+      return madDespikeFilter(cleaned, normalizedParams.madThreshold);
+    case 'median':
+      return rollingMedianFilter(cleaned, normalizedParams.medianWindowSamples);
+    case 'impact_guard':
+      return madDespikeFilter(
+        hampelFilter(cleaned, normalizedParams.hampelWindowSamples, normalizedParams.hampelSigma),
+        normalizedParams.madThreshold
+      );
+    case 'anti_ski_slope': {
+      const detrended = preprocessSignal(cleaned, 'detrend');
+      const depiked = madDespikeFilter(
+        hampelFilter(detrended, normalizedParams.hampelWindowSamples, normalizedParams.hampelSigma),
+        normalizedParams.madThreshold
+      );
+      return highpassFirstOrderBySample(depiked, fs, normalizedParams.highpassCutoffHz, 2);
+    }
+    case 'lowpass':
+      return lowpassFirstOrderBySample(cleaned, fs, normalizedParams.lowpassCutoffHz, 2);
+    case 'highpass':
+      return highpassFirstOrderBySample(cleaned, fs, normalizedParams.highpassCutoffHz, 2);
+    case 'bandpass':
+      return bandpassFirstOrderBySample(cleaned, fs, normalizedParams.bandpassLowHz, normalizedParams.bandpassHighHz);
+    case 'notch':
+      return notchFilterBySample(cleaned, fs, normalizedParams.notchFreqHz, normalizedParams.notchQ);
+    case 'harmonic_notch':
+      return harmonicNotchFilterBySample(
+        cleaned,
+        fs,
+        normalizedParams.notchFreqHz,
+        normalizedParams.notchQ,
+        normalizedParams.harmonicCount
+      );
+    case 'moving_average':
+      return movingAverageFilter(cleaned, normalizedParams.smoothingWindowSamples);
+    case 'exponential':
+      return exponentialSmoothingFilter(cleaned, normalizedParams.exponentialAlpha);
+    case 'savgol':
+      return savitzkyGolaySmooth(cleaned, normalizedParams.savgolWindowSamples);
+    default:
+      return cleaned;
+  }
+};
+
+const normalizePreprocessModes = (modes: Array<PreprocessMode | undefined | null>): PreprocessMode[] => {
+  const unique = new Set<PreprocessMode>();
+  modes.forEach((mode) => {
+    if (!mode || mode === 'none') return;
+    unique.add(mode);
+  });
+  return PREPROCESS_PIPELINE_ORDER.filter((mode) => unique.has(mode));
+};
+
+const getPreprocessModesFromSaved = (saved: Pick<SavedAnalysis, 'preprocessMode' | 'preprocessModes'>) => (
+  normalizePreprocessModes(
+    Array.isArray(saved.preprocessModes) && saved.preprocessModes.length > 0
+      ? saved.preprocessModes
+      : [saved.preprocessMode]
+  )
+);
+
+const formatPreprocessPipeline = (modes: PreprocessMode[]) => {
+  const normalized = normalizePreprocessModes(modes);
+  if (normalized.length === 0) return PREPROCESS_LABELS.none;
+  return normalized.map((mode) => PREPROCESS_LABELS[mode]).join(' + ');
+};
+
+const applySignalFilterPipeline = (
+  data: number[],
+  modes: PreprocessMode[],
+  fs: number,
+  params: SignalFilterParams
+) => {
+  const normalized = normalizePreprocessModes(modes);
+  if (normalized.length === 0) return data.slice();
+  return normalized.reduce(
+    (current, mode) => applySignalFilterPreset(current, mode, fs, params),
+    data.slice()
+  );
 };
 
 const getWindowCoefficient = (index: number, length: number, windowType: FFTWindowType) => {
@@ -510,116 +1137,6 @@ const computeFrequencySpectrum = (
   }
 
   return { frequencies, amplitudes, effectiveSamples: nfft, effectiveSamplingRate };
-};
-
-const computeWelchPSD = (
-  data: number[],
-  fs: number,
-  freqRange: [number, number],
-  windowType: FFTWindowType
-): { frequencies: number[]; amplitudes: number[] } => {
-  if (data.length < MIN_FFT_SAMPLES || fs <= 0) {
-    const { frequencies, amplitudes } = computeFrequencySpectrum(data, fs, freqRange, windowType, 4_096);
-    return { frequencies, amplitudes: amplitudes.map((amp) => amp * amp) };
-  }
-
-  const segmentSize = Math.min(2_048, floorPowerOfTwo(data.length));
-  const overlap = segmentSize >> 1;
-  const step = Math.max(1, segmentSize - overlap);
-  const nSegments = Math.max(1, Math.floor((data.length - segmentSize) / step) + 1);
-
-  let frequencies: number[] = [];
-  let psdSum: number[] = [];
-  let usedSegments = 0;
-
-  for (let s = 0; s < nSegments; s++) {
-    const start = s * step;
-    const segment = data.slice(start, start + segmentSize);
-    if (segment.length < segmentSize) break;
-
-    const spectrum = computeFrequencySpectrum(segment, fs, freqRange, windowType, segmentSize);
-    if (spectrum.amplitudes.length === 0) continue;
-    if (psdSum.length === 0) {
-      frequencies = spectrum.frequencies;
-      psdSum = new Array(spectrum.amplitudes.length).fill(0);
-    }
-
-    for (let i = 0; i < psdSum.length && i < spectrum.amplitudes.length; i++) {
-      psdSum[i] += spectrum.amplitudes[i] * spectrum.amplitudes[i];
-    }
-    usedSegments++;
-  }
-
-  if (usedSegments === 0) return { frequencies: [], amplitudes: [] };
-  return {
-    frequencies,
-    amplitudes: psdSum.map((value) => value / usedSegments),
-  };
-};
-
-const computeFrequencySpectrumDetailed = (
-  data: number[],
-  fs: number,
-  freqRange: [number, number],
-  windowType: FFTWindowType,
-  maxSamples = MAX_FFT_SAMPLES
-): {
-  frequencies: number[];
-  amplitudes: number[];
-  phasesDeg: number[];
-  effectiveSamples: number;
-  effectiveSamplingRate: number;
-} => {
-  const n = data.length;
-  if (n < 2 || fs <= 0) {
-    return { frequencies: [], amplitudes: [], phasesDeg: [], effectiveSamples: 0, effectiveSamplingRate: 0 };
-  }
-
-  const minFreq = Math.max(0, Math.min(freqRange[0], freqRange[1]));
-  const requestedMaxFreq = Math.min(fs / 2, Math.max(freqRange[0], freqRange[1]));
-  const duration = n / fs;
-  const targetSamplingRate = Math.min(fs, Math.max(requestedMaxFreq * 2.5, 64));
-  const targetSamples = Math.max(MIN_FFT_SAMPLES, Math.ceil(duration * targetSamplingRate));
-  const boundedTargetSamples = Math.min(n, targetSamples, maxSamples);
-  let nfft = ceilPowerOfTwo(boundedTargetSamples);
-
-  if (nfft > n) nfft = floorPowerOfTwo(n);
-  if (nfft > maxSamples) nfft = floorPowerOfTwo(maxSamples);
-  if (nfft < 2) {
-    return { frequencies: [], amplitudes: [], phasesDeg: [], effectiveSamples: 0, effectiveSamplingRate: 0 };
-  }
-
-  const { samples } = buildResampledBuffer(data, nfft);
-  const real = new Float64Array(nfft);
-  const imag = new Float64Array(nfft);
-  let windowSum = 0;
-
-  for (let i = 0; i < nfft; i++) {
-    const window = getWindowCoefficient(i, nfft, windowType);
-    real[i] = samples[i] * window;
-    windowSum += window;
-  }
-
-  fftInPlace(real, imag);
-
-  const effectiveSamplingRate = nfft / duration;
-  const freqResolution = effectiveSamplingRate / nfft;
-  const maxFreq = Math.min(requestedMaxFreq, effectiveSamplingRate / 2);
-  const maxBin = Math.min(nfft >> 1, Math.floor(maxFreq / freqResolution));
-  const frequencies: number[] = [];
-  const amplitudes: number[] = [];
-  const phasesDeg: number[] = [];
-
-  for (let k = 0; k <= maxBin; k++) {
-    const frequency = k * freqResolution;
-    if (frequency < minFreq) continue;
-    const scale = k === 0 || k === nfft / 2 ? 1 / windowSum : 2 / windowSum;
-    frequencies.push(frequency);
-    amplitudes.push(Math.hypot(real[k], imag[k]) * scale);
-    phasesDeg.push((Math.atan2(imag[k], real[k]) * 180) / Math.PI);
-  }
-
-  return { frequencies, amplitudes, phasesDeg, effectiveSamples: nfft, effectiveSamplingRate };
 };
 
 const computeEnvelopeFast = (data: number[], fs: number) => {
@@ -736,144 +1253,6 @@ const getManualSpectralMarkers = (
     }>;
 };
 
-const getAccelerationScaleToMps2 = (unit: string) => {
-  const normalized = unit.trim().toLowerCase().replace(/\s+/g, '');
-  if (['g', 'gs', 'gee', 'ga'].includes(normalized)) return STANDARD_GRAVITY;
-  if (['mg', 'millig', 'milli-g'].includes(normalized)) return STANDARD_GRAVITY / 1_000;
-  if (normalized.startsWith('gal')) return 0.01;
-  if (['cm/s2', 'cm/s²', 'cm/s^2'].includes(normalized)) return 0.01;
-  if (['mm/s2', 'mm/s²', 'mm/s^2'].includes(normalized)) return 0.001;
-  if (['m/s2', 'm/s²', 'm/s^2', 'mps2', 'm/s/s', 'm·s⁻²'].includes(normalized)) return 1;
-  return 1;
-};
-
-const removeLinearTrendByTime = (time: number[], values: number[]) => {
-  const n = Math.min(time.length, values.length);
-  if (n === 0) return [];
-  if (n < 2) return values.slice(0, n);
-
-  const t0 = time[0] ?? 0;
-  let sumT = 0;
-  let sumY = 0;
-  let sumTT = 0;
-  let sumTY = 0;
-
-  for (let i = 0; i < n; i++) {
-    const t = (Number.isFinite(time[i]) ? time[i] : i) - t0;
-    const y = Number.isFinite(values[i]) ? values[i] : 0;
-    sumT += t;
-    sumY += y;
-    sumTT += t * t;
-    sumTY += t * y;
-  }
-
-  const denominator = n * sumTT - sumT * sumT;
-  if (Math.abs(denominator) < 1e-12) {
-    const mean = sumY / n;
-    return values.slice(0, n).map((value) => (Number.isFinite(value) ? value : 0) - mean);
-  }
-
-  const slope = (n * sumTY - sumT * sumY) / denominator;
-  const intercept = (sumY - slope * sumT) / n;
-  return values.slice(0, n).map((value, index) => {
-    const t = (Number.isFinite(time[index]) ? time[index] : index) - t0;
-    return (Number.isFinite(value) ? value : 0) - (slope * t + intercept);
-  });
-};
-
-const applyFirstOrderHighpass = (time: number[], values: number[], cutoffHz: number) => {
-  const n = Math.min(time.length, values.length);
-  if (n === 0) return [];
-  if (!Number.isFinite(cutoffHz) || cutoffHz <= 0 || n < 3) return values.slice(0, n);
-
-  const output = new Array<number>(n).fill(0);
-  const rc = 1 / (2 * Math.PI * cutoffHz);
-
-  for (let i = 1; i < n; i++) {
-    const rawDt = time[i] - time[i - 1];
-    const dt = Number.isFinite(rawDt) && rawDt > 0 ? rawDt : 0;
-    const alpha = dt > 0 ? rc / (rc + dt) : 1;
-    const current = Number.isFinite(values[i]) ? values[i] : 0;
-    const previous = Number.isFinite(values[i - 1]) ? values[i - 1] : 0;
-    output[i] = alpha * (output[i - 1] + current - previous);
-  }
-
-  return output;
-};
-
-const integrateTrapezoidal = (time: number[], values: number[]) => {
-  const n = Math.min(time.length, values.length);
-  const integrated = new Array<number>(n).fill(0);
-
-  for (let i = 1; i < n; i++) {
-    const rawDt = time[i] - time[i - 1];
-    const dt = Number.isFinite(rawDt) && rawDt > 0 ? rawDt : 0;
-    const previous = Number.isFinite(values[i - 1]) ? values[i - 1] : 0;
-    const current = Number.isFinite(values[i]) ? values[i] : 0;
-    integrated[i] = integrated[i - 1] + 0.5 * (previous + current) * dt;
-  }
-
-  return integrated;
-};
-
-const computeKinematics = (
-  time: number[],
-  acceleration: number[],
-  unit: string,
-  highpassHz: number
-) => {
-  const n = Math.min(time.length, acceleration.length);
-  const accelerationScale = getAccelerationScaleToMps2(unit);
-
-  if (n < 2) {
-    const emptyStats = computeStats([]);
-    return {
-      accelerationMps2: [] as number[],
-      velocityMps: [] as number[],
-      displacementM: [] as number[],
-      velocityStats: emptyStats,
-      displacementStats: emptyStats,
-      accelerationScale,
-      driftWarning: false,
-      driftRatio: 0,
-    };
-  }
-
-  const boundedTime = time.slice(0, n);
-  const accelerationMps2 = acceleration.slice(0, n).map((value) => (
-    Number.isFinite(value) ? value * accelerationScale : 0
-  ));
-
-  const baselineAcceleration = removeLinearTrendByTime(boundedTime, accelerationMps2);
-  const filteredAcceleration = applyFirstOrderHighpass(boundedTime, baselineAcceleration, highpassHz);
-  const rawVelocity = integrateTrapezoidal(boundedTime, filteredAcceleration);
-  const velocityMps = applyFirstOrderHighpass(
-    boundedTime,
-    removeLinearTrendByTime(boundedTime, rawVelocity),
-    highpassHz
-  );
-  const rawDisplacement = integrateTrapezoidal(boundedTime, velocityMps);
-  const displacementM = removeLinearTrendByTime(boundedTime, rawDisplacement);
-  const velocityStats = computeStats(velocityMps);
-  const displacementStats = computeStats(displacementM);
-  const rawDisplacementStats = computeStats(rawDisplacement);
-  const drift = rawDisplacement.length > 1
-    ? Math.abs(rawDisplacement[rawDisplacement.length - 1] - rawDisplacement[0])
-    : 0;
-  const driftRatio = rawDisplacementStats.maxAbs > 1e-12 ? drift / rawDisplacementStats.maxAbs : 0;
-
-  return {
-    accelerationMps2,
-    velocityMps,
-    displacementM,
-    velocityStats,
-    displacementStats,
-    accelerationScale,
-    driftWarning: driftRatio > 0.35,
-    driftRatio,
-  };
-};
-
 const getChannelLabel = (channel: Channel) => {
   switch (channel) {
     case 'acc_x': return 'Aceleración X';
@@ -988,6 +1367,8 @@ const SignalProcessingContent: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analysisResults, setAnalysisResults] = useState<FullAnalysisResult | null>(null);
+  const [vibrationBackendResults, setVibrationBackendResults] = useState<Partial<Record<Channel, VibrationBackendChannelState>>>({});
+  const [vibrationBackendStatus, setVibrationBackendStatus] = useState('enDAQ listo: ejecute Analyze para calcular FFT/PSD/A-V-D.');
 
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
@@ -997,6 +1378,9 @@ const SignalProcessingContent: React.FC = () => {
   const [freqRange, setFreqRange] = useState<[number, number]>([0, 50]);
   const [colorPalette, setColorPalette] = useState<keyof typeof COLOR_PALETTES>('default');
   const [preprocessMode, setPreprocessMode] = useState<PreprocessMode>('demean');
+  const [preprocessModes, setPreprocessModes] = useState<PreprocessMode[]>(['demean']);
+  const [filterParams, setFilterParams] = useState<SignalFilterParams>(DEFAULT_FILTER_PARAMS);
+  const [filterParamDraft, setFilterParamDraft] = useState<SignalFilterParams>(DEFAULT_FILTER_PARAMS);
   const [fftWindowType, setFftWindowType] = useState<FFTWindowType>('hann');
   const [integrationOutput, setIntegrationOutput] = useState<IntegrationOutputMode>('both');
   const [displacementUnit, setDisplacementUnit] = useState<DisplacementUnit>('mm');
@@ -1042,6 +1426,8 @@ const SignalProcessingContent: React.FC = () => {
 
   // Plotly refs
   const timePlotRef = useRef<any>(null);
+  const vibrationBackendCacheRef = useRef<Map<string, VibrationDataAnalysisResult>>(new Map());
+  const vibrationBackendAbortRef = useRef<AbortController | null>(null);
   const [PlotComponent, setPlotComponent] = useState<any>(null);
   const { theme } = useTheme();
   const plotTheme = useMemo(() => getPlotlyTheme(theme), [theme]);
@@ -1064,7 +1450,22 @@ const SignalProcessingContent: React.FC = () => {
         if (workspace.activeView) setActiveView(workspace.activeView);
         if (workspace.colorPalette) setColorPalette(workspace.colorPalette);
         if (workspace.selectedSegment) setSelectedSegment(workspace.selectedSegment);
-        if (workspace.preprocessMode) setPreprocessMode(workspace.preprocessMode);
+        const restoredPreprocessModes = normalizePreprocessModes(
+          Array.isArray(workspace.preprocessModes)
+            ? workspace.preprocessModes
+            : [workspace.preprocessMode]
+        );
+        setPreprocessModes(restoredPreprocessModes);
+        if (workspace.preprocessMode) {
+          setPreprocessMode(workspace.preprocessMode);
+        } else {
+          setPreprocessMode(restoredPreprocessModes[restoredPreprocessModes.length - 1] ?? 'none');
+        }
+        if (workspace.filterParams) {
+          const restoredFilterParams = normalizeFilterParams(workspace.filterParams);
+          setFilterParams(restoredFilterParams);
+          setFilterParamDraft(restoredFilterParams);
+        }
         if (workspace.fftWindowType) setFftWindowType(workspace.fftWindowType);
         if (workspace.integrationOutput) setIntegrationOutput(workspace.integrationOutput);
         if (workspace.displacementUnit) setDisplacementUnit(workspace.displacementUnit);
@@ -1111,6 +1512,8 @@ const SignalProcessingContent: React.FC = () => {
         activeView,
         colorPalette,
         preprocessMode,
+        preprocessModes,
+        filterParams,
         fftWindowType,
         integrationOutput,
         displacementUnit,
@@ -1118,11 +1521,14 @@ const SignalProcessingContent: React.FC = () => {
         plotCatalogMode,
         plotCatalogStyle,
         plotCatalogTimeLayout,
-                  }));
+        plotCatalogShowManualPeaks,
+        plotCatalogShowPeakLabels,
+        plotCatalogManualPeaks,
+      }));
     } catch (err) {
       console.warn('No se pudo persistir el espacio de análisis local', err);
     }
-  }, [activeChannel, activeView, channelViewMode, colorPalette, displacementUnit, fftWindowType, freqRange, historyZoomRange, integrationHighpassHz, integrationOutput, plotCatalogManualPeaks, plotCatalogMode, plotCatalogShowManualPeaks, plotCatalogShowPeakLabels, plotCatalogStyle, plotCatalogTimeLayout, preprocessMode, segments, selectedSegment, timeRange, workspaceLoaded]);
+  }, [activeChannel, activeView, channelViewMode, colorPalette, displacementUnit, fftWindowType, filterParams, freqRange, historyZoomRange, integrationHighpassHz, integrationOutput, plotCatalogManualPeaks, plotCatalogMode, plotCatalogShowManualPeaks, plotCatalogShowPeakLabels, plotCatalogStyle, plotCatalogTimeLayout, preprocessMode, preprocessModes, segments, selectedSegment, timeRange, workspaceLoaded]);
 
   useEffect(() => {
     if (!workspaceLoaded) return;
@@ -1133,16 +1539,128 @@ const SignalProcessingContent: React.FC = () => {
     }
   }, [savedAnalyses, workspaceLoaded]);
 
+  const selectedSegmentObj = useMemo(
+    () => segments.find((segment) => segment.id === selectedSegment) ?? null,
+    [segments, selectedSegment]
+  );
+
+  const activeAnalysisWindow = useMemo<AnalysisWindowMeta>(() => {
+    const start = Number.isFinite(timeRange[0]) ? Math.min(timeRange[0], timeRange[1]) : 0;
+    const end = Number.isFinite(timeRange[1]) ? Math.max(timeRange[0], timeRange[1]) : start;
+    const { startIdx, endIdx } = signalData
+      ? getTimeWindowIndices(signalData.time, [start, end])
+      : { startIdx: 0, endIdx: -1 };
+
+    return {
+      label: selectedSegmentObj ? selectedSegmentObj.label : 'Ventana manual',
+      start,
+      end,
+      duration: Math.max(0, end - start),
+      samples: signalData && endIdx >= startIdx ? endIdx - startIdx + 1 : 0,
+      source: selectedSegmentObj ? 'segment' : 'manual',
+    };
+  }, [selectedSegmentObj, signalData, timeRange]);
+
+  const fullSignalRange = useMemo<[number, number]>(() => {
+    if (!signalData || signalData.time.length === 0) return [0, 0];
+    return [signalData.time[0], signalData.time[signalData.time.length - 1]];
+  }, [signalData]);
+
+  const isFullRecordSelected = useMemo(
+    () => Boolean(signalData) && rangesMatch(activeAnalysisWindow.start, activeAnalysisWindow.end, fullSignalRange[0], fullSignalRange[1]),
+    [activeAnalysisWindow.end, activeAnalysisWindow.start, fullSignalRange, signalData]
+  );
+
+  const filterParamFingerprint = useMemo(
+    () => JSON.stringify(normalizeFilterParams(filterParams)),
+    [filterParams]
+  );
+
+  const filterParamDraftFingerprint = useMemo(
+    () => JSON.stringify(normalizeFilterParams(filterParamDraft)),
+    [filterParamDraft]
+  );
+
+  const hasPendingFilterParams = filterParamDraftFingerprint !== filterParamFingerprint;
+
+  const preprocessPipelineFingerprint = useMemo(
+    () => JSON.stringify(normalizePreprocessModes(preprocessModes)),
+    [preprocessModes]
+  );
+
+  const buildVibrationBackendCacheKey = useCallback((channel: Channel) => [
+    'endaq-v1',
+    fileName || 'signal',
+    signalData?.time.length ?? 0,
+    channel,
+    samplingRate,
+    unit,
+    preprocessPipelineFingerprint,
+    filterParamFingerprint,
+    fftWindowType,
+    freqRange[0].toFixed(6),
+    freqRange[1].toFixed(6),
+    integrationHighpassHz.toFixed(6),
+    VIBRATION_BACKEND_BIN_WIDTH_HZ.toFixed(6),
+    VIBRATION_BACKEND_OVERLAP.toFixed(6),
+    activeAnalysisWindow.start.toFixed(6),
+    activeAnalysisWindow.end.toFixed(6),
+  ].join('|'), [
+    activeAnalysisWindow.end,
+    activeAnalysisWindow.start,
+    fftWindowType,
+    fileName,
+    filterParamFingerprint,
+    freqRange,
+    integrationHighpassHz,
+    preprocessPipelineFingerprint,
+    samplingRate,
+    signalData?.time.length,
+    unit,
+  ]);
+
+  const getVibrationBackendResult = useCallback((channel: Channel): VibrationDataAnalysisResult | null => {
+    const cacheKey = buildVibrationBackendCacheKey(channel);
+    const currentState = vibrationBackendResults[channel];
+    if (currentState?.cacheKey === cacheKey) return currentState.result;
+    return vibrationBackendCacheRef.current.get(cacheKey) ?? null;
+  }, [buildVibrationBackendCacheKey, vibrationBackendResults]);
+
+  const activeVibrationBackendResult = useMemo(
+    () => getVibrationBackendResult(activeChannel),
+    [activeChannel, getVibrationBackendResult]
+  );
+
+  useEffect(() => {
+    if (selectedSegment && !selectedSegmentObj) {
+      setSelectedSegment(null);
+    }
+  }, [selectedSegment, selectedSegmentObj]);
+
+  useEffect(() => {
+    setPlotDataLabels({});
+  }, [
+    activeAnalysisWindow.start,
+    activeAnalysisWindow.end,
+    fileName,
+    fftWindowType,
+    filterParamFingerprint,
+    freqRange,
+    plotCatalogMode,
+    preprocessPipelineFingerprint,
+  ]);
+
+
   // ============ COMPUTED ============
 
   const processedChannels = useMemo(() => {
     if (!signalData) return { acc_x: [], acc_y: [], acc_z: [] };
     return {
-      acc_x: preprocessSignal(signalData.acc_x, preprocessMode),
-      acc_y: preprocessSignal(signalData.acc_y, preprocessMode),
-      acc_z: preprocessSignal(signalData.acc_z, preprocessMode),
+      acc_x: applySignalFilterPipeline(signalData.acc_x, preprocessModes, samplingRate, filterParams),
+      acc_y: applySignalFilterPipeline(signalData.acc_y, preprocessModes, samplingRate, filterParams),
+      acc_z: applySignalFilterPipeline(signalData.acc_z, preprocessModes, samplingRate, filterParams),
     };
-  }, [preprocessMode, signalData]);
+  }, [filterParams, preprocessModes, samplingRate, signalData]);
 
   const resultantData = useMemo(() => {
     if (!signalData) return [];
@@ -1174,59 +1692,22 @@ const SignalProcessingContent: React.FC = () => {
   }, [signalData, timeRange, activeChannelData]);
 
   const kinematicsData = useMemo(
-    () => computeKinematics(filteredData.time, filteredData.data, unit, integrationHighpassHz),
-    [filteredData.data, filteredData.time, integrationHighpassHz, unit]
+    () => buildKinematicsDataFromBackend(activeVibrationBackendResult),
+    [activeVibrationBackendResult]
   );
 
-  const vibrationDataSeries = useMemo(() => {
-    const accelerationG = kinematicsData.accelerationMps2.map((value) => value / STANDARD_GRAVITY);
-    const velocityMmS = kinematicsData.velocityMps.map((value) => value * VIBRATIONDATA_VELOCITY_FACTOR);
-    const displacementMm = kinematicsData.displacementM.map((value) => value * VIBRATIONDATA_DISPLACEMENT_FACTOR);
-    const { startIdx, endIdx } = getTimeWindowIndices(filteredData.time, historyZoomRange);
-    const hasZoom = filteredData.time.length > 0 && endIdx >= startIdx;
+  const vibrationDataSeries = useMemo(
+    () => buildVibrationSeriesFromBackend(activeVibrationBackendResult, historyZoomRange),
+    [activeVibrationBackendResult, historyZoomRange]
+  );
 
-    return {
-      full: {
-        time: filteredData.time,
-        accelerationG,
-        velocityMmS,
-        displacementMm,
-      },
-      zoom: {
-        time: hasZoom ? filteredData.time.slice(startIdx, endIdx + 1) : [],
-        accelerationG: hasZoom ? accelerationG.slice(startIdx, endIdx + 1) : [],
-        velocityMmS: hasZoom ? velocityMmS.slice(startIdx, endIdx + 1) : [],
-        displacementMm: hasZoom ? displacementMm.slice(startIdx, endIdx + 1) : [],
-      },
-    };
-  }, [
-    filteredData.time,
-    historyZoomRange,
-    kinematicsData.accelerationMps2,
-    kinematicsData.displacementM,
-    kinematicsData.velocityMps,
-  ]);
-
-  const vibrationSpectra = useMemo(() => ({
-    acceleration: computeFrequencySpectrumDetailed(
-      vibrationDataSeries.full.accelerationG,
-      samplingRate,
-      freqRange,
-      fftWindowType
+  const vibrationSpectra = useMemo(
+    () => buildVibrationSpectraFromBackend(
+      activeVibrationBackendResult,
+      plotCatalogMode === 'fft_overall' ? 'aggregate_fft' : 'fft'
     ),
-    velocity: computeFrequencySpectrumDetailed(
-      vibrationDataSeries.full.velocityMmS,
-      samplingRate,
-      freqRange,
-      fftWindowType
-    ),
-    displacement: computeFrequencySpectrumDetailed(
-      vibrationDataSeries.full.displacementMm,
-      samplingRate,
-      freqRange,
-      fftWindowType
-    ),
-  }), [fftWindowType, freqRange, samplingRate, vibrationDataSeries.full.accelerationG, vibrationDataSeries.full.displacementMm, vibrationDataSeries.full.velocityMmS]);
+    [activeVibrationBackendResult, plotCatalogMode]
+  );
 
   const displacementDisplayFactor = DISPLACEMENT_UNIT_FACTORS[displacementUnit];
   const displacementDisplayLabel = DISPLACEMENT_UNIT_LABELS[displacementUnit];
@@ -1234,7 +1715,7 @@ const SignalProcessingContent: React.FC = () => {
   const integrationDisplaySeries = useMemo(() => {
     if (integrationOutput === 'velocity') {
       return {
-        time: filteredData.time,
+        time: vibrationDataSeries.full.time,
         data: kinematicsData.velocityMps,
         label: 'Velocidad integrada',
         column: 'velocity_m_per_s',
@@ -1243,7 +1724,7 @@ const SignalProcessingContent: React.FC = () => {
     }
 
     return {
-      time: filteredData.time,
+      time: vibrationDataSeries.full.time,
       data: kinematicsData.displacementM.map((value) => value * displacementDisplayFactor),
       label: 'Desplazamiento integrado',
       column: `displacement_${displacementUnit}`,
@@ -1253,10 +1734,10 @@ const SignalProcessingContent: React.FC = () => {
     displacementDisplayFactor,
     displacementDisplayLabel,
     displacementUnit,
-    filteredData.time,
     integrationOutput,
     kinematicsData.displacementM,
     kinematicsData.velocityMps,
+    vibrationDataSeries.full.time,
   ]);
 
   const allChannelsData = useMemo(() => {
@@ -1283,6 +1764,138 @@ const SignalProcessingContent: React.FC = () => {
   const getAllChannelsData = useCallback(() => {
     return allChannelsData;
   }, [allChannelsData]);
+
+  const getChannelsForBackendAnalysis = useCallback((): Channel[] => {
+    if (activeView === 'vibrationdata' || channelViewMode === 'single') return [activeChannel];
+    if (channelViewMode === 'all_parallel' || channelViewMode === 'all_overlay') {
+      return ['acc_x', 'acc_y', 'acc_z', 'resultant'];
+    }
+    return ['acc_x', 'acc_y', 'acc_z'];
+  }, [activeChannel, activeView, channelViewMode]);
+
+  const requestVibrationBackendAnalysis = useCallback(async (channels: Channel[]) => {
+    if (!signalData || allChannelsData.time.length < 2) return;
+    const uniqueChannels = Array.from(new Set(channels));
+    const cachedUpdates: Partial<Record<Channel, VibrationBackendChannelState>> = {};
+    const missingChannels: Channel[] = [];
+
+    uniqueChannels.forEach((channel) => {
+      const cacheKey = buildVibrationBackendCacheKey(channel);
+      const cached = vibrationBackendCacheRef.current.get(cacheKey);
+      if (cached) {
+        cachedUpdates[channel] = { cacheKey, result: cached };
+      } else {
+        missingChannels.push(channel);
+      }
+    });
+
+    if (Object.keys(cachedUpdates).length > 0) {
+      setVibrationBackendResults((prev) => ({ ...prev, ...cachedUpdates }));
+    }
+
+    if (missingChannels.length === 0) {
+      setVibrationBackendStatus('enDAQ: resultados cargados desde cache de memoria.');
+      return;
+    }
+
+    vibrationBackendAbortRef.current?.abort();
+    const controller = new AbortController();
+    vibrationBackendAbortRef.current = controller;
+    setVibrationBackendStatus(`enDAQ calculando ${missingChannels.map(getChannelLabel).join(', ')}...`);
+
+    try {
+      const responses = await Promise.all(missingChannels.map(async (channel) => {
+        const cacheKey = buildVibrationBackendCacheKey(channel);
+        const channelData = allChannelsData[channel];
+        if (!channelData || channelData.length < 2) {
+          throw new Error(`Canal ${getChannelLabel(channel)} sin datos suficientes para enDAQ.`);
+        }
+        const result = await computeVibrationDataAnalysis({
+          acceleration: channelData,
+          time: allChannelsData.time,
+          sampling_rate: samplingRate,
+          unit,
+          bin_width: VIBRATION_BACKEND_BIN_WIDTH_HZ,
+          window: fftWindowType,
+          overlap: VIBRATION_BACKEND_OVERLAP,
+          highpass_hz: integrationHighpassHz,
+          freq_range: freqRange,
+        }, controller.signal);
+        vibrationBackendCacheRef.current.set(cacheKey, result);
+        return { channel, cacheKey, result };
+      }));
+
+      if (controller.signal.aborted) return;
+      setVibrationBackendResults((prev) => {
+        const next = { ...prev };
+        responses.forEach(({ channel, cacheKey, result }) => {
+          next[channel] = { cacheKey, result };
+        });
+        return next;
+      });
+      const engine = responses[0]?.result.engine;
+      setVibrationBackendStatus(
+        engine
+          ? `enDAQ ${engine.version}: FFT/PSD/A-V-D actualizados.`
+          : 'enDAQ: FFT/PSD/A-V-D actualizados.'
+      );
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      const message = err instanceof Error ? err.message : String(err);
+      setVibrationBackendStatus(`enDAQ no completó el cálculo: ${message}`);
+      throw err;
+    }
+  }, [
+    allChannelsData,
+    buildVibrationBackendCacheKey,
+    fftWindowType,
+    freqRange,
+    integrationHighpassHz,
+    samplingRate,
+    signalData,
+    unit,
+  ]);
+
+  useEffect(() => {
+    const requiresBackend = activeView === 'fft'
+      || activeView === 'psd'
+      || activeView === 'integration'
+      || activeView === 'vibrationdata';
+    if (!requiresBackend || !signalData || hasPendingFilterParams || !analysisResults) return;
+    const lastModes = lastAnalysisMeta ? getPreprocessModesFromSaved(lastAnalysisMeta) : [];
+    const lastFilterFingerprint = JSON.stringify(normalizeFilterParams(lastAnalysisMeta?.filterParams));
+    const lastPipelineFingerprint = JSON.stringify(normalizePreprocessModes(lastModes));
+    const analysisMatchesCurrent = Boolean(lastAnalysisMeta)
+      && rangesMatch(lastAnalysisMeta!.start, lastAnalysisMeta!.end, activeAnalysisWindow.start, activeAnalysisWindow.end)
+      && lastAnalysisMeta!.fftWindowType === fftWindowType
+      && lastAnalysisMeta!.samplingRate === samplingRate
+      && lastAnalysisMeta!.unit === unit
+      && lastFilterFingerprint === filterParamFingerprint
+      && lastPipelineFingerprint === preprocessPipelineFingerprint;
+    if (!analysisMatchesCurrent) return;
+    const channels = getChannelsForBackendAnalysis();
+    const missing = channels.filter((channel) => !getVibrationBackendResult(channel));
+    if (missing.length === 0) return;
+    void requestVibrationBackendAnalysis(missing).catch((err) => {
+      console.warn('No se pudo completar el análisis enDAQ bajo demanda', err);
+    });
+  }, [
+    activeView,
+    activeAnalysisWindow.end,
+    activeAnalysisWindow.start,
+    analysisResults,
+    fftWindowType,
+    filterParamFingerprint,
+    getChannelsForBackendAnalysis,
+    getVibrationBackendResult,
+    hasPendingFilterParams,
+    lastAnalysisMeta,
+    preprocessPipelineFingerprint,
+    requestVibrationBackendAnalysis,
+    samplingRate,
+    signalData,
+    unit,
+  ]);
 
   const addManualPeakFrequency = useCallback((frequency: number) => {
     if (!Number.isFinite(frequency) || frequency <= 0) return;
@@ -1480,8 +2093,8 @@ const SignalProcessingContent: React.FC = () => {
     if (activeView === 'integration') {
       if (integrationOutput === 'both') {
         return {
-        time: filteredData.time,
-        columns: [
+          time: vibrationDataSeries.full.time,
+          columns: [
             { name: 'velocity_m_per_s', data: kinematicsData.velocityMps },
             {
               name: `displacement_${displacementUnit}`,
@@ -1521,64 +2134,10 @@ const SignalProcessingContent: React.FC = () => {
     vibrationSpectra,
   ]);
 
-  const selectedSegmentObj = useMemo(
-    () => segments.find((segment) => segment.id === selectedSegment) ?? null,
-    [segments, selectedSegment]
-  );
-
-  const activeAnalysisWindow = useMemo<AnalysisWindowMeta>(() => {
-    const start = Number.isFinite(timeRange[0]) ? Math.min(timeRange[0], timeRange[1]) : 0;
-    const end = Number.isFinite(timeRange[1]) ? Math.max(timeRange[0], timeRange[1]) : start;
-    const { startIdx, endIdx } = signalData
-      ? getTimeWindowIndices(signalData.time, [start, end])
-      : { startIdx: 0, endIdx: -1 };
-
-    return {
-      label: selectedSegmentObj ? selectedSegmentObj.label : 'Ventana manual',
-      start,
-      end,
-      duration: Math.max(0, end - start),
-      samples: signalData && endIdx >= startIdx ? endIdx - startIdx + 1 : 0,
-      source: selectedSegmentObj ? 'segment' : 'manual',
-    };
-  }, [selectedSegmentObj, signalData, timeRange]);
-
-  const fullSignalRange = useMemo<[number, number]>(() => {
-    if (!signalData || signalData.time.length === 0) return [0, 0];
-    return [signalData.time[0], signalData.time[signalData.time.length - 1]];
-  }, [signalData]);
-
-  const isFullRecordSelected = useMemo(
-    () => Boolean(signalData) && rangesMatch(activeAnalysisWindow.start, activeAnalysisWindow.end, fullSignalRange[0], fullSignalRange[1]),
-    [activeAnalysisWindow.end, activeAnalysisWindow.start, fullSignalRange, signalData]
-  );
-
-  useEffect(() => {
-    if (selectedSegment && !selectedSegmentObj) {
-      setSelectedSegment(null);
-    }
-  }, [selectedSegment, selectedSegmentObj]);
-
-  useEffect(() => {
-    setPlotDataLabels({});
-  }, [
-    activeAnalysisWindow.start,
-    activeAnalysisWindow.end,
-    fileName,
-    fftWindowType,
-    freqRange,
-    plotCatalogMode,
-    preprocessMode,
-  ]);
-
   // ============ FFT/PSD COMPUTATION ============
   
   const computeLocalFFT = useCallback((data: number[], fs: number) => {
     return computeFrequencySpectrum(data, fs, freqRange, fftWindowType);
-  }, [fftWindowType, freqRange]);
-
-  const computeLocalPSD = useCallback((data: number[], fs: number) => {
-    return computeWelchPSD(data, fs, freqRange, fftWindowType);
   }, [fftWindowType, freqRange]);
 
   const setManualTimeWindow = useCallback((range: [number, number]) => {
@@ -1589,6 +2148,8 @@ const SignalProcessingContent: React.FC = () => {
     ]);
     setAnalysisResults(null);
     setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: ventana manual actualizada.');
     setAnalysisStatus('Ventana manual preparada para análisis.');
   }, []);
 
@@ -1597,6 +2158,8 @@ const SignalProcessingContent: React.FC = () => {
     setTimeRange([segment.start, segment.end]);
     setAnalysisResults(null);
     setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: ventana de análisis actualizada.');
     setAnalysisStatus(`Ventana "${segment.label}" preparada para análisis.`);
   }, []);
 
@@ -1608,23 +2171,112 @@ const SignalProcessingContent: React.FC = () => {
     setHistoryZoomRange(getDefaultHistoryZoomRange(fullRange));
     setAnalysisResults(null);
     setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: registro completo seleccionado.');
     setAnalysisStatus(`Registro completo seleccionado para análisis: ${formatRange(fullRange[0], fullRange[1])}.`);
   }, [signalData]);
 
   const selectRawProcessing = useCallback(() => {
     setPreprocessMode('none');
+    setPreprocessModes([]);
     setFftWindowType('rectangular');
     setAnalysisResults(null);
     setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: modo sin tratamiento activado.');
     setAnalysisStatus('Modo sin tratamiento activado: señal cruda + ventana FFT rectangular.');
   }, []);
 
   const selectStandardProcessing = useCallback(() => {
     setPreprocessMode('demean');
+    setPreprocessModes(['demean']);
     setFftWindowType('hann');
     setAnalysisResults(null);
     setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: modo estándar activado.');
     setAnalysisStatus('Modo estándar activado: remover media + ventana Hann/Hanning.');
+  }, []);
+
+  const selectImpactGuardProcessing = useCallback(() => {
+    const nextModes = normalizePreprocessModes([...preprocessModes, 'impact_guard']);
+    setPreprocessMode('impact_guard');
+    setPreprocessModes(nextModes);
+    setFftWindowType('hann');
+    setAnalysisResults(null);
+    setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: pipeline actualizado.');
+    setAnalysisStatus(`Anti-golpes agregado al pipeline: ${formatPreprocessPipeline(nextModes)}.`);
+  }, [preprocessModes]);
+
+  const selectAntiSkiSlopeProcessing = useCallback(() => {
+    const nextModes = normalizePreprocessModes([...preprocessModes, 'anti_ski_slope']);
+    setPreprocessMode('anti_ski_slope');
+    setPreprocessModes(nextModes);
+    setFftWindowType('hann');
+    setAnalysisResults(null);
+    setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: pipeline actualizado.');
+    setAnalysisStatus(`Anti ski-slope agregado al pipeline: ${formatPreprocessPipeline(nextModes)}.`);
+  }, [preprocessModes]);
+
+  const addPreprocessMode = useCallback((mode: PreprocessMode) => {
+    setPreprocessMode(mode);
+    if (mode === 'none') {
+      setPreprocessModes([]);
+      setFftWindowType('rectangular');
+      setAnalysisResults(null);
+      setLastAnalysisMeta(null);
+      setVibrationBackendResults({});
+      setVibrationBackendStatus('enDAQ pendiente: pipeline limpiado.');
+      setAnalysisStatus('Pipeline limpiado: se usará la señal cruda.');
+      return;
+    }
+
+    const nextModes = normalizePreprocessModes([...preprocessModes, mode]);
+    setPreprocessModes(nextModes);
+    setAnalysisResults(null);
+    setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: pipeline actualizado.');
+    setAnalysisStatus(`Tratamiento agregado/seleccionado: ${formatPreprocessPipeline(nextModes)}.`);
+  }, [preprocessModes]);
+
+  const removePreprocessMode = useCallback((mode: PreprocessMode) => {
+    const nextModes = normalizePreprocessModes(preprocessModes.filter((item) => item !== mode));
+    setPreprocessModes(nextModes);
+    setPreprocessMode(nextModes[nextModes.length - 1] ?? 'none');
+    setAnalysisResults(null);
+    setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: pipeline actualizado.');
+    setAnalysisStatus(
+      nextModes.length
+        ? `Tratamiento removido. Pipeline activo: ${formatPreprocessPipeline(nextModes)}.`
+        : 'Pipeline vacío: se usará la señal cruda.'
+    );
+  }, [preprocessModes]);
+
+  const updateFilterParam = useCallback((key: keyof SignalFilterParams, value: number) => {
+    setFilterParamDraft((prev) => normalizeFilterParams({ ...prev, [key]: value }));
+  }, []);
+
+  const applyFilterParamDraft = useCallback(() => {
+    const nextParams = normalizeFilterParams(filterParamDraft);
+    setFilterParams(nextParams);
+    setFilterParamDraft(nextParams);
+    setAnalysisResults(null);
+    setLastAnalysisMeta(null);
+    setAnalysisStatus('Parámetros de filtros aplicados al pipeline.');
+    setVibrationBackendResults({});
+    setVibrationBackendStatus('enDAQ pendiente: ejecute Analyze para recalcular FFT/PSD/A-V-D.');
+  }, [filterParamDraft]);
+
+  const resetFilterParamDraft = useCallback(() => {
+    setFilterParamDraft(DEFAULT_FILTER_PARAMS);
+    setAnalysisStatus('Parámetros restaurados en edición. Pulse Aplicar para recalcular la señal.');
   }, []);
 
   const buildAnalysisCacheKey = useCallback((meta: AnalysisWindowMeta) => [
@@ -1632,11 +2284,12 @@ const SignalProcessingContent: React.FC = () => {
     signalData?.time.length ?? 0,
     samplingRate,
     unit,
-    preprocessMode,
+    preprocessPipelineFingerprint,
+    filterParamFingerprint,
     fftWindowType,
     meta.start.toFixed(6),
     meta.end.toFixed(6),
-  ].join('|'), [fftWindowType, fileName, preprocessMode, samplingRate, signalData?.time.length, unit]);
+  ].join('|'), [fftWindowType, fileName, filterParamFingerprint, preprocessPipelineFingerprint, samplingRate, signalData?.time.length, unit]);
 
   // ============ PLOT LAYOUT ============
   
@@ -1703,7 +2356,10 @@ const SignalProcessingContent: React.FC = () => {
         setHistoryZoomRange(getDefaultHistoryZoomRange([parsed.time[0], parsed.time[parsed.time.length - 1]]));
         setSelectedSegment(null);
         setLastAnalysisMeta(null);
+        setVibrationBackendResults({});
+        vibrationBackendCacheRef.current.clear();
         setAnalysisStatus(`Archivo cargado. ${parsed.timeMetadata.label}. La ventana activa cubre todo el registro.`);
+        setVibrationBackendStatus('enDAQ listo: ejecute Analyze para calcular FFT/PSD/A-V-D.');
         const fs = calculateSamplingRate(parsed.time);
         if (fs > 0) setSamplingRate(Math.round(fs));
         setError(null);
@@ -1752,7 +2408,10 @@ const SignalProcessingContent: React.FC = () => {
     setHistoryZoomRange(getDefaultHistoryZoomRange([0, duration]));
     setSelectedSegment(null);
     setLastAnalysisMeta(null);
+    setVibrationBackendResults({});
+    vibrationBackendCacheRef.current.clear();
     setAnalysisStatus('Señal de demostración cargada. La ventana activa cubre todo el registro.');
+    setVibrationBackendStatus('enDAQ listo: ejecute Analyze para calcular FFT/PSD/A-V-D.');
     setFileName('datos_muestra_puente.csv');
     setError(null);
   }, [samplingRate]);
@@ -1805,9 +2464,16 @@ const SignalProcessingContent: React.FC = () => {
     setSelectedSegment(matchingSegment?.id ?? null);
     setAnalysisResults(saved.result);
     setLastAnalysisMeta(saved);
-    if (saved.preprocessMode) setPreprocessMode(saved.preprocessMode);
+    const savedModes = getPreprocessModesFromSaved(saved);
+    setPreprocessModes(savedModes);
+    setPreprocessMode(savedModes[savedModes.length - 1] ?? saved.preprocessMode ?? 'none');
+    if (saved.filterParams) {
+      const savedFilterParams = normalizeFilterParams(saved.filterParams);
+      setFilterParams(savedFilterParams);
+      setFilterParamDraft(savedFilterParams);
+    }
     if (saved.fftWindowType) setFftWindowType(saved.fftWindowType);
-    setAnalysisStatus(`Cálculo local cargado: ${saved.label}`);
+    setAnalysisStatus(`Cálculo cargado desde historial: ${saved.label}`);
     setError(null);
   }, [segments]);
 
@@ -1816,7 +2482,7 @@ const SignalProcessingContent: React.FC = () => {
     if (lastAnalysisMeta?.id === id) {
       setLastAnalysisMeta(null);
       setAnalysisResults(null);
-      setAnalysisStatus('Cálculo local eliminado. Ejecute un nuevo análisis.');
+      setAnalysisStatus('Cálculo eliminado. Ejecute un nuevo análisis.');
     }
   }, [lastAnalysisMeta]);
 
@@ -1849,9 +2515,10 @@ const SignalProcessingContent: React.FC = () => {
 
       const cached = savedAnalyses.find(item => item.cacheKey === cacheKey);
       if (cached) {
+        await requestVibrationBackendAnalysis(getChannelsForBackendAnalysis());
         setAnalysisResults(cached.result);
         setLastAnalysisMeta(cached);
-        setAnalysisStatus(`Resultado cargado desde caché local: ${cached.label}`);
+        setAnalysisStatus(`Resultado cargado desde caché del navegador: ${cached.label}`);
         setError(null);
         return;
       }
@@ -1884,15 +2551,18 @@ const SignalProcessingContent: React.FC = () => {
         fileName: fileName || 'Señal sin nombre',
         samplingRate,
         unit,
-        preprocessMode,
+        preprocessMode: preprocessModes[0] ?? 'none',
+        preprocessModes: normalizePreprocessModes(preprocessModes),
+        filterParams: normalizeFilterParams(filterParams),
         fftWindowType,
         result: results,
       };
 
+      await requestVibrationBackendAnalysis(getChannelsForBackendAnalysis());
       setAnalysisResults(results);
       setLastAnalysisMeta(saved);
       setSavedAnalyses(prev => [saved, ...prev.filter(item => item.cacheKey !== cacheKey)].slice(0, MAX_SAVED_ANALYSES));
-      setAnalysisStatus(`Análisis completado y guardado localmente: ${saved.label}`);
+      setAnalysisStatus(`Análisis completado; resultados enDAQ actualizados: ${saved.label}`);
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -1905,11 +2575,14 @@ const SignalProcessingContent: React.FC = () => {
     buildAnalysisCacheKey,
     fileName,
     getAllChannelsData,
+    getChannelsForBackendAnalysis,
     samplingRate,
     savedAnalyses,
     sensorLocation,
     signalData,
-    preprocessMode,
+    requestVibrationBackendAnalysis,
+    preprocessModes,
+    filterParams,
     fftWindowType,
     unit,
   ]);
@@ -2051,7 +2724,7 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
     <body>
       <div class="header">
         <h1>🔬 Reporte de Procesamiento de Señales</h1>
-        <h2>Basado en VibrationData Toolbox v13.3</h2>
+        <h2>Compatible con VibrationData / enDAQ backend</h2>
       </div>
       ${metadata}
       <div class="chart-container">
@@ -2133,7 +2806,14 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
         unit,
         time_range_s: timeRange,
         time_base: signalData.timeMetadata,
-        preprocessing: PREPROCESS_LABELS[preprocessMode],
+        preprocessing: formatPreprocessPipeline(preprocessModes),
+        preprocessing_modes: normalizePreprocessModes(preprocessModes),
+        preprocessing_descriptions: normalizePreprocessModes(preprocessModes).map((mode) => ({
+          mode,
+          label: PREPROCESS_LABELS[mode],
+          description: PREPROCESS_DESCRIPTIONS[mode],
+        })),
+        filter_params: normalizeFilterParams(filterParams),
         fft_window: FFT_WINDOW_LABELS[fftWindowType],
         integration_output: INTEGRATION_OUTPUT_LABELS[integrationOutput],
         integration_highpass_hz: integrationHighpassHz,
@@ -2142,6 +2822,11 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
         plot_catalog_style: PLOT_CATALOG_STYLE_LABELS[plotCatalogStyle],
         plot_catalog_time_layout: PLOT_CATALOG_TIME_LAYOUT_LABELS[plotCatalogTimeLayout],
         plot_catalog_manual_peaks_hz: plotCatalogManualPeaks,
+        vibration_backend: activeVibrationBackendResult ? {
+          method: activeVibrationBackendResult.method,
+          engine: activeVibrationBackendResult.engine,
+          settings: activeVibrationBackendResult.settings,
+        } : null,
         export_date: new Date().toISOString(),
         sensor_location: sensorLocation,
       },
@@ -2163,10 +2848,10 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
       })),
       derived_kinematics: {
         channel: activeChannel,
-        method: 'trapezoidal integration + high-pass drift control + linear baseline correction',
+        method: activeVibrationBackendResult?.time_histories.method.integration ?? 'endaq backend pending',
         acceleration_scale_to_m_s2: kinematicsData.accelerationScale,
         highpass_hz: integrationHighpassHz,
-        time: filteredData.time,
+        time: vibrationDataSeries.full.time,
         acceleration_m_s2: kinematicsData.accelerationMps2,
         velocity_m_s: kinematicsData.velocityMps,
         displacement_m: kinematicsData.displacementM,
@@ -2183,12 +2868,13 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
     downloadFile(JSON.stringify(data, null, 2), `signal_data_${timestamp}.json`, 'application/json');
   }, [
     activeChannel,
+    activeVibrationBackendResult,
     analysisResults,
     displacementDisplayFactor,
     displacementDisplayLabel,
     fftWindowType,
+    filterParams,
     fileName,
-    filteredData.time,
     getAllChannelsData,
     integrationHighpassHz,
     integrationOutput,
@@ -2196,12 +2882,13 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
     plotCatalogMode,
     plotCatalogStyle,
     plotCatalogTimeLayout,
-    preprocessMode,
+    preprocessModes,
     segments,
     sensorLocation,
     signalData,
     timeRange,
     unit,
+    vibrationDataSeries.full.time,
   ]);
 
   // ============ CHART DATA BUILDERS ============
@@ -2259,34 +2946,34 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
   }, [activeChannel, chartConfig.lineColor, chartConfig.lineWidth, colorPalette, getAllChannelsData, segments, unit]);
 
   const renderFFTChart = useCallback(() => {
-    const filtered = getFilteredData();
-    const { frequencies, amplitudes } = computeLocalFFT(filtered.data, samplingRate);
+    const spectrum = activeVibrationBackendResult?.fft.acceleration;
+    if (!spectrum) return [];
     
     return [{
-      x: frequencies,
-      y: amplitudes,
+      x: spectrum.frequencies,
+      y: spectrum.amplitudes,
       type: 'scattergl' as const,
       mode: 'lines' as const,
-      name: 'FFT',
+      name: 'FFT enDAQ',
       line: { color: chartConfig.lineColor, width: chartConfig.lineWidth },
       hovertemplate: `<b>FFT — ${getChannelLabel(activeChannel)}</b><br>Frecuencia: %{x:.3f} Hz<br>Amplitud: %{y:.5g} ${unit}<extra></extra>`,
     }];
-  }, [activeChannel, chartConfig.lineColor, chartConfig.lineWidth, computeLocalFFT, getFilteredData, samplingRate, unit]);
+  }, [activeChannel, activeVibrationBackendResult, chartConfig.lineColor, chartConfig.lineWidth, unit]);
 
   const renderPSDChart = useCallback(() => {
-    const filtered = getFilteredData();
-    const { frequencies, amplitudes } = computeLocalPSD(filtered.data, samplingRate);
+    const spectrum = activeVibrationBackendResult?.psd.acceleration;
+    if (!spectrum) return [];
     
     return [{
-      x: frequencies,
-      y: amplitudes,
+      x: spectrum.frequencies,
+      y: spectrum.psd,
       type: 'scattergl' as const,
       mode: 'lines' as const,
-      name: 'PSD',
+      name: 'PSD Welch enDAQ',
       line: { color: chartConfig.lineColor, width: chartConfig.lineWidth },
-      hovertemplate: `<b>PSD — ${getChannelLabel(activeChannel)}</b><br>Frecuencia: %{x:.3f} Hz<br>PSD: %{y:.5g} ${unit}²/Hz<extra></extra>`,
+      hovertemplate: `<b>PSD — ${getChannelLabel(activeChannel)}</b><br>Frecuencia: %{x:.3f} Hz<br>PSD: %{y:.5g} ${spectrum.unit}<extra></extra>`,
     }];
-  }, [activeChannel, chartConfig.lineColor, chartConfig.lineWidth, computeLocalPSD, getFilteredData, samplingRate, unit]);
+  }, [activeChannel, activeVibrationBackendResult, chartConfig.lineColor, chartConfig.lineWidth]);
 
   const renderWaterfallChart = useCallback(() => {
     const filtered = getFilteredData();
@@ -2355,9 +3042,10 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
   }, [activeChannel, chartConfig.lineColor, chartConfig.lineWidth, getFilteredData, samplingRate, unit]);
 
   const renderIntegrationChart = useCallback(() => {
-    const velocityTrace = downsampleMinMax(filteredData.time, kinematicsData.velocityMps, MAX_TIME_PLOT_POINTS);
+    const integrationTime = vibrationDataSeries.full.time;
+    const velocityTrace = downsampleMinMax(integrationTime, kinematicsData.velocityMps, MAX_TIME_PLOT_POINTS);
     const displacementValues = kinematicsData.displacementM.map((value) => value * displacementDisplayFactor);
-    const displacementTrace = downsampleMinMax(filteredData.time, displacementValues, MAX_TIME_PLOT_POINTS);
+    const displacementTrace = downsampleMinMax(integrationTime, displacementValues, MAX_TIME_PLOT_POINTS);
 
     const velocityPlot = {
       x: velocityTrace.x,
@@ -2394,10 +3082,10 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
     chartConfig.lineWidth,
     displacementDisplayFactor,
     displacementDisplayLabel,
-    filteredData.time,
     integrationOutput,
     kinematicsData.displacementM,
     kinematicsData.velocityMps,
+    vibrationDataSeries.full.time,
   ]);
 
   const renderVibrationDataChart = useCallback(() => {
@@ -3343,10 +4031,11 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
         layout = makeBaseLayout('acc_x', title, 'Tiempo (s)', `Amplitud (${unit})`, { showlegend: true });
       } else if (activeView === 'fft') {
         channels.forEach((channel) => {
-          const { frequencies, amplitudes } = computeLocalFFT(allChannelsData[channel], samplingRate);
+          const spectrum = getVibrationBackendResult(channel)?.fft.acceleration;
+          if (!spectrum) return;
           traces.push({
-            x: frequencies,
-            y: amplitudes,
+            x: spectrum.frequencies,
+            y: spectrum.amplitudes,
             type: 'scattergl' as const,
             mode: 'lines' as const,
             name: getChannelLabel(channel),
@@ -3357,15 +4046,16 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
         layout = makeBaseLayout('acc_x', title, 'Frecuencia (Hz)', `Amplitud (${unit})`, { showlegend: true });
       } else if (activeView === 'psd') {
         channels.forEach((channel) => {
-          const { frequencies, amplitudes } = computeLocalPSD(allChannelsData[channel], samplingRate);
+          const spectrum = getVibrationBackendResult(channel)?.psd.acceleration;
+          if (!spectrum) return;
           traces.push({
-            x: frequencies,
-            y: amplitudes,
+            x: spectrum.frequencies,
+            y: spectrum.psd,
             type: 'scattergl' as const,
             mode: 'lines' as const,
             name: getChannelLabel(channel),
             line: { color: palette[channel], width: chartConfig.lineWidth },
-            hovertemplate: `<b>PSD — ${getChannelLabel(channel)}</b><br>Frecuencia: %{x:.3f} Hz<br>PSD: %{y:.6g} ${unit}²/Hz<extra></extra>`,
+            hovertemplate: `<b>PSD — ${getChannelLabel(channel)}</b><br>Frecuencia: %{x:.3f} Hz<br>PSD: %{y:.6g} ${spectrum.unit}<extra></extra>`,
           });
         });
         layout = makeBaseLayout('acc_x', title, 'Frecuencia (Hz)', `PSD (${unit}²/Hz)`, { showlegend: true });
@@ -3377,9 +4067,12 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
         layout = makeBaseLayout('acc_x', title, 'Tiempo (s)', `Amplitud (${unit})`, { showlegend: true });
       } else if (activeView === 'integration') {
         channels.forEach((channel) => {
-          const kinematics = computeKinematics(time, allChannelsData[channel], unit, integrationHighpassHz);
+          const backendResult = getVibrationBackendResult(channel);
+          if (!backendResult) return;
+          const kinematics = buildKinematicsDataFromBackend(backendResult);
+          const backendTime = backendResult.time_histories.time;
           if (integrationOutput === 'velocity' || integrationOutput === 'both') {
-            const velocityTrace = downsampleMinMax(time, kinematics.velocityMps, MAX_TIME_PLOT_POINTS / 2);
+            const velocityTrace = downsampleMinMax(backendTime, kinematics.velocityMps, MAX_TIME_PLOT_POINTS / 2);
             traces.push({
               x: velocityTrace.x,
               y: velocityTrace.y,
@@ -3392,7 +4085,7 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
           }
           if (integrationOutput === 'displacement' || integrationOutput === 'both') {
             const displacementValues = kinematics.displacementM.map((value) => value * displacementDisplayFactor);
-            const displacementTrace = downsampleMinMax(time, displacementValues, MAX_TIME_PLOT_POINTS / 2);
+            const displacementTrace = downsampleMinMax(backendTime, displacementValues, MAX_TIME_PLOT_POINTS / 2);
             traces.push({
               x: displacementTrace.x,
               y: displacementTrace.y,
@@ -3441,28 +4134,28 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
         layout = makeBaseLayout(channel, title, 'Tiempo (s)', `Amplitud (${unit})`);
       } else if (activeView === 'fft') {
         title = 'FFT';
-        const { frequencies, amplitudes } = computeLocalFFT(data, samplingRate);
+        const spectrum = getVibrationBackendResult(channel)?.fft.acceleration;
         traces = [{
-          x: frequencies,
-          y: amplitudes,
+          x: spectrum?.frequencies ?? [],
+          y: spectrum?.amplitudes ?? [],
           type: 'scattergl' as const,
           mode: 'lines' as const,
-          name: `FFT ${getChannelLabel(channel)}`,
+          name: `FFT enDAQ ${getChannelLabel(channel)}`,
           line: { color, width: chartConfig.lineWidth },
           hovertemplate: `<b>FFT — ${getChannelLabel(channel)}</b><br>Frecuencia: %{x:.3f} Hz<br>Amplitud: %{y:.6g} ${unit}<extra></extra>`,
         }];
         layout = makeBaseLayout(channel, title, 'Frecuencia (Hz)', `Amplitud (${unit})`);
       } else if (activeView === 'psd') {
         title = 'PSD Welch';
-        const { frequencies, amplitudes } = computeLocalPSD(data, samplingRate);
+        const spectrum = getVibrationBackendResult(channel)?.psd.acceleration;
         traces = [{
-          x: frequencies,
-          y: amplitudes,
+          x: spectrum?.frequencies ?? [],
+          y: spectrum?.psd ?? [],
           type: 'scattergl' as const,
           mode: 'lines' as const,
-          name: `PSD ${getChannelLabel(channel)}`,
+          name: `PSD enDAQ ${getChannelLabel(channel)}`,
           line: { color, width: chartConfig.lineWidth },
-          hovertemplate: `<b>PSD — ${getChannelLabel(channel)}</b><br>Frecuencia: %{x:.3f} Hz<br>PSD: %{y:.6g} ${unit}²/Hz<extra></extra>`,
+          hovertemplate: `<b>PSD — ${getChannelLabel(channel)}</b><br>Frecuencia: %{x:.3f} Hz<br>PSD: %{y:.6g} ${spectrum?.unit ?? `${unit}²/Hz`}<extra></extra>`,
         }];
         layout = makeBaseLayout(channel, title, 'Frecuencia (Hz)', `PSD (${unit}²/Hz)`);
       } else if (activeView === 'envelope') {
@@ -3475,10 +4168,12 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
         layout = makeBaseLayout(channel, title, 'Tiempo (s)', `Amplitud (${unit})`, { showlegend: true });
       } else if (activeView === 'integration') {
         title = 'Integración';
-        const kinematics = computeKinematics(time, data, unit, integrationHighpassHz);
-        const velocityTrace = downsampleMinMax(time, kinematics.velocityMps, MAX_TIME_PLOT_POINTS / 2);
+        const backendResult = getVibrationBackendResult(channel);
+        const kinematics = buildKinematicsDataFromBackend(backendResult);
+        const backendTime = backendResult?.time_histories.time ?? [];
+        const velocityTrace = downsampleMinMax(backendTime, kinematics.velocityMps, MAX_TIME_PLOT_POINTS / 2);
         const displacementValues = kinematics.displacementM.map((value) => value * displacementDisplayFactor);
-        const displacementTrace = downsampleMinMax(time, displacementValues, MAX_TIME_PLOT_POINTS / 2);
+        const displacementTrace = downsampleMinMax(backendTime, displacementValues, MAX_TIME_PLOT_POINTS / 2);
         const velocityPlot = {
           x: velocityTrace.x,
           y: velocityTrace.y,
@@ -3548,12 +4243,12 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
     chartConfig.titleFontSize,
     colorPalette,
     computeLocalFFT,
-    computeLocalPSD,
     displacementDisplayFactor,
     displacementDisplayLabel,
     exportConfig.includeTitle,
     fileName,
     getPlotLayout,
+    getVibrationBackendResult,
     integrationHighpassHz,
     integrationOutput,
     plotTheme,
@@ -3584,6 +4279,8 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
 
   const activeViewLabel = viewOptions.find(view => view.id === activeView)?.label ?? 'Tiempo';
   const activeChannelLabel = channelOptions.find(channel => channel.id === activeChannel)?.label ?? activeChannel.toUpperCase();
+  const activePreprocessModes = normalizePreprocessModes(preprocessModes);
+  const activePreprocessLabel = formatPreprocessPipeline(activePreprocessModes);
   const showSpectralControls = activeView === 'fft'
     || activeView === 'psd'
     || activeView === 'waterfall'
@@ -3592,6 +4289,26 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
   const showCatalogControls = activeView === 'vibrationdata';
   const showCatalogTimeControls = activeView === 'vibrationdata' && plotCatalogMode === 'time_histories';
   const showPeakControls = activeView === 'vibrationdata' && plotCatalogMode !== 'time_histories';
+  const showRobustFilterControls = [
+    'impact_guard',
+    'hampel',
+    'mad_despike',
+    'median',
+    'anti_ski_slope',
+  ].includes(preprocessMode);
+  const showFrequencyFilterControls = [
+    'anti_ski_slope',
+    'lowpass',
+    'highpass',
+    'bandpass',
+    'notch',
+    'harmonic_notch',
+  ].includes(preprocessMode);
+  const showSmoothingFilterControls = [
+    'moving_average',
+    'exponential',
+    'savgol',
+  ].includes(preprocessMode);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-50 dark:bg-[#0a0a0a] transition-colors duration-300">
@@ -3605,7 +4322,7 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                 <div className="flex items-center justify-between gap-3 mb-4 lg:mb-5">
                   <div className="min-w-0">
                     <p className="hidden lg:block text-[9px] text-accent-primary font-bold uppercase tracking-[0.2em] mb-1 font-mono">
-                      VibrationData v13.3
+                      VibrationData-compatible · enDAQ backend
                     </p>
                     <h1 className="text-sm lg:text-2xl font-display font-black text-gray-900 dark:text-white uppercase tracking-tighter leading-none truncate">
                       Signal <span className="text-accent-primary">Processing</span>
@@ -3652,7 +4369,10 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                     {error}
                   </div>
                 )}
-                <div className="mt-3 rounded-2xl border border-accent-primary/20 bg-accent-primary/5 p-3 space-y-3">
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar px-3 lg:px-6 py-3 lg:py-4 pb-6 space-y-3 lg:space-y-4">
+                <div className="premium-card p-3 space-y-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-start gap-2 min-w-0">
                       <Scissors size={14} className="mt-0.5 text-accent-primary shrink-0" />
@@ -3734,19 +4454,14 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                     </label>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="premium-card-inner p-2 block">
-                      <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Tratamiento</span>
-                      <select
-                        value={preprocessMode}
-                        onChange={(e) => {
-                          setPreprocessMode(e.target.value as PreprocessMode);
-                          setAnalysisResults(null);
-                          setLastAnalysisMeta(null);
-                          setAnalysisStatus('Tratamiento actualizado. Presione Analyze para recalcular.');
-                        }}
-                        className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
-                      >
+	                  <div className="grid grid-cols-2 gap-2">
+	                    <label className="premium-card-inner p-2 block">
+		                      <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Agregar tratamiento</span>
+	                      <select
+	                        value={preprocessMode}
+	                        onChange={(e) => addPreprocessMode(e.target.value as PreprocessMode)}
+	                        className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                      >
                         {(Object.keys(PREPROCESS_LABELS) as PreprocessMode[]).map((mode) => (
                           <option key={mode} value={mode}>{PREPROCESS_LABELS[mode]}</option>
                         ))}
@@ -3760,7 +4475,9 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                           setFftWindowType(e.target.value as FFTWindowType);
                           setAnalysisResults(null);
                           setLastAnalysisMeta(null);
+                          setVibrationBackendResults({});
                           setAnalysisStatus('Ventana FFT actualizada. Presione Analyze para recalcular.');
+                          setVibrationBackendStatus('enDAQ pendiente: ventana FFT actualizada.');
                         }}
                         className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
                       >
@@ -3768,41 +4485,385 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                           <option key={windowName} value={windowName}>{FFT_WINDOW_LABELS[windowName]}</option>
                         ))}
                       </select>
-                    </label>
-                  </div>
+	                    </label>
+	                  </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={selectRawProcessing}
-                      className={`rounded-lg border px-2 py-1.5 text-[8px] font-display font-black uppercase tracking-wider transition-colors ${
-                        preprocessMode === 'none' && fftWindowType === 'rectangular'
-                          ? 'bg-accent-secondary/15 border-accent-secondary/30 text-accent-secondary'
-                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-500 hover:text-accent-secondary'
-                      }`}
+	                  <div className="rounded-xl border border-border-light dark:border-border-dark bg-gray-50/70 dark:bg-bg-dark/60 px-3 py-2 text-[9px] font-mono font-bold text-gray-500 dark:text-gray-400 leading-relaxed">
+	                    <span className="text-accent-primary">Editando {PREPROCESS_LABELS[preprocessMode]}:</span>{' '}
+	                    {PREPROCESS_DESCRIPTIONS[preprocessMode]}
+	                  </div>
+
+		                  <div className="rounded-xl border border-accent-primary/10 bg-accent-primary/5 px-3 py-2 space-y-2">
+		                    <div className="flex items-center justify-between gap-2">
+		                      <div className="min-w-0">
+		                        <span className="text-[8px] font-mono font-black uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">Pipeline activo</span>
+		                        <p className="mt-0.5 text-[8px] font-mono font-bold text-gray-400 leading-relaxed">
+		                          Selecciona un paso para editar sus parámetros.
+		                        </p>
+		                      </div>
+		                      <span className="shrink-0 rounded-full bg-white/70 dark:bg-bg-dark border border-accent-primary/15 px-2 py-0.5 text-[8px] font-mono font-black text-accent-primary">
+		                        {activePreprocessModes.length} pasos
+		                      </span>
+		                    </div>
+		                    {activePreprocessModes.length === 0 ? (
+		                      <p className="rounded-xl border border-dashed border-border-light dark:border-border-dark bg-white/60 dark:bg-black/10 p-2 text-[9px] font-mono font-bold text-gray-400">
+		                        Sin tratamientos: se usará la señal cruda.
+		                      </p>
+		                    ) : (
+		                      <div className="space-y-1.5">
+		                        {activePreprocessModes.map((mode, index) => {
+		                          const isEditingMode = preprocessMode === mode;
+		                          return (
+		                            <div
+		                              key={mode}
+		                              role="button"
+		                              tabIndex={0}
+		                              onClick={() => {
+		                                setPreprocessMode(mode);
+		                                setAnalysisStatus(`Configurando: ${PREPROCESS_LABELS[mode]}.`);
+		                              }}
+		                              onKeyDown={(event) => {
+		                                if (event.key === 'Enter' || event.key === ' ') {
+		                                  event.preventDefault();
+		                                  setPreprocessMode(mode);
+		                                  setAnalysisStatus(`Configurando: ${PREPROCESS_LABELS[mode]}.`);
+		                                }
+		                              }}
+		                              className={`group flex items-center gap-2 rounded-xl border px-2 py-2 cursor-pointer transition-all ${
+		                                isEditingMode
+		                                  ? 'bg-accent-primary/10 border-accent-primary/35 shadow-sm'
+		                                  : 'bg-white/75 dark:bg-bg-dark border-border-light dark:border-border-dark hover:border-accent-primary/25'
+		                              }`}
+		                            >
+		                              <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-mono font-black ${
+		                                isEditingMode ? 'bg-accent-primary text-white' : 'bg-gray-100 dark:bg-black/20 text-gray-500'
+		                              }`}>
+		                                {index + 1}
+		                              </span>
+		                              <div className="min-w-0 flex-1">
+		                                <div className="flex items-center gap-1.5 min-w-0">
+		                                  <span className="truncate text-[9px] font-mono font-black text-gray-800 dark:text-gray-100">
+		                                    {PREPROCESS_LABELS[mode]}
+		                                  </span>
+		                                  {isEditingMode && (
+		                                    <span className="shrink-0 rounded-full bg-accent-primary/15 px-1.5 py-0.5 text-[7px] font-mono font-black uppercase tracking-wider text-accent-primary">
+		                                      Configurando
+		                                    </span>
+		                                  )}
+		                                </div>
+		                                <p className="mt-0.5 truncate text-[8px] font-mono font-bold text-gray-400">
+		                                  {isEditingMode ? 'Los controles de abajo editan este paso.' : 'Click para configurar este paso.'}
+		                                </p>
+		                              </div>
+		                              <button
+		                                type="button"
+		                                onClick={(event) => {
+		                                  event.stopPropagation();
+		                                  removePreprocessMode(mode);
+		                                }}
+		                                className="shrink-0 rounded-full border border-transparent px-2 py-1 text-[10px] font-black text-gray-300 opacity-60 transition-colors group-hover:opacity-100 hover:border-red-400/30 hover:bg-red-500/10 hover:text-red-500"
+		                                title="Quitar este paso"
+		                              >
+		                                ×
+		                              </button>
+		                            </div>
+		                          );
+		                        })}
+		                      </div>
+		                    )}
+		                    <p className="text-[8px] font-mono font-bold text-gray-400 leading-relaxed">
+		                      Orden automático: base → anti-golpes → anti ski-slope/frecuencia → suavizado.
+		                    </p>
+		                  </div>
+
+	                  <div className="grid grid-cols-2 gap-2">
+	                    <button
+	                      type="button"
+	                      onClick={selectRawProcessing}
+	                      className={`rounded-lg border px-2 py-1.5 text-[8px] font-display font-black uppercase tracking-wider transition-colors ${
+	                        activePreprocessModes.length === 0 && fftWindowType === 'rectangular'
+	                          ? 'bg-accent-secondary/15 border-accent-secondary/30 text-accent-secondary'
+	                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-500 hover:text-accent-secondary'
+	                      }`}
                     >
                       Sin tratamiento
                     </button>
                     <button
-                      type="button"
-                      onClick={selectStandardProcessing}
-                      className={`rounded-lg border px-2 py-1.5 text-[8px] font-display font-black uppercase tracking-wider transition-colors ${
-                        preprocessMode === 'demean' && fftWindowType === 'hann'
-                          ? 'bg-accent-primary/15 border-accent-primary/30 text-accent-primary'
-                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-500 hover:text-accent-primary'
-                      }`}
-                    >
-                      Estándar
-                    </button>
-                  </div>
+	                      type="button"
+	                      onClick={selectStandardProcessing}
+	                      className={`rounded-lg border px-2 py-1.5 text-[8px] font-display font-black uppercase tracking-wider transition-colors ${
+	                        activePreprocessModes.length === 1 && activePreprocessModes.includes('demean') && fftWindowType === 'hann'
+	                          ? 'bg-accent-primary/15 border-accent-primary/30 text-accent-primary'
+	                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-500 hover:text-accent-primary'
+	                      }`}
+	                    >
+	                      Estándar
+	                    </button>
+	                    <button
+	                      type="button"
+	                      onClick={selectImpactGuardProcessing}
+	                      className={`rounded-lg border px-2 py-1.5 text-[8px] font-display font-black uppercase tracking-wider transition-colors ${
+	                        activePreprocessModes.includes('impact_guard')
+	                          ? 'bg-amber-500/15 border-amber-500/30 text-amber-600 dark:text-amber-300'
+	                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-500 hover:text-amber-500'
+	                      }`}
+	                    >
+	                      Anti-golpes
+	                    </button>
+	                    <button
+	                      type="button"
+	                      onClick={selectAntiSkiSlopeProcessing}
+	                      className={`rounded-lg border px-2 py-1.5 text-[8px] font-display font-black uppercase tracking-wider transition-colors ${
+	                        activePreprocessModes.includes('anti_ski_slope')
+	                          ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-600 dark:text-cyan-300'
+	                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-500 hover:text-cyan-500'
+	                      }`}
+	                    >
+	                      Anti ski-slope
+	                    </button>
+	                  </div>
 
-                  <div className="rounded-xl border border-accent-primary/10 bg-white/65 dark:bg-black/10 px-3 py-2 text-[9px] font-mono font-bold text-accent-primary leading-relaxed">
-                    {analysisStatus}
-                  </div>
+	                  {(showRobustFilterControls || showFrequencyFilterControls || showSmoothingFilterControls) && (
+	                    <div className="rounded-2xl border border-accent-primary/10 bg-white/65 dark:bg-black/10 p-2 space-y-2">
+	                      <div className="flex items-center justify-between gap-2">
+	                        <div className="min-w-0">
+	                          <div className="text-[8px] font-mono font-black uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">Parámetros del filtro</div>
+	                          {hasPendingFilterParams && (
+	                            <div className="mt-0.5 text-[8px] font-mono font-black uppercase tracking-wider text-amber-500">Cambios sin aplicar</div>
+	                          )}
+	                        </div>
+	                        <div className="flex items-center gap-2 shrink-0">
+	                          <button
+	                            type="button"
+	                            onClick={resetFilterParamDraft}
+	                            className="text-[8px] font-mono font-black uppercase tracking-wider text-gray-400 hover:text-accent-secondary"
+	                          >
+	                            Reset
+	                          </button>
+	                          <button
+	                            type="button"
+	                            onClick={applyFilterParamDraft}
+	                            disabled={!hasPendingFilterParams}
+	                            className={`rounded-lg border px-2 py-1 text-[8px] font-mono font-black uppercase tracking-wider transition-colors ${
+	                              hasPendingFilterParams
+	                                ? 'bg-accent-primary/10 border-accent-primary/25 text-accent-primary hover:bg-accent-primary/15'
+	                                : 'bg-gray-50 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-300 cursor-not-allowed'
+	                            }`}
+	                          >
+	                            Aplicar
+	                          </button>
+	                        </div>
+	                      </div>
+
+	                      {showFrequencyFilterControls && (
+	                        <div className="grid grid-cols-2 gap-2">
+	                          {(preprocessMode === 'lowpass') && (
+	                            <label className="premium-card-inner p-2 block">
+	                              <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Pasa bajo Hz</span>
+	                              <input
+	                                type="number"
+	                                min="0.001"
+	                                step="0.1"
+	                                value={filterParamDraft.lowpassCutoffHz}
+	                                onChange={(e) => updateFilterParam('lowpassCutoffHz', parseFloat(e.target.value))}
+	                                className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                              />
+	                            </label>
+	                          )}
+	                          {(preprocessMode === 'highpass' || preprocessMode === 'anti_ski_slope') && (
+	                            <label className="premium-card-inner p-2 block">
+	                              <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Pasa alto Hz</span>
+	                              <input
+	                                type="number"
+	                                min="0"
+	                                step="0.05"
+	                                value={filterParamDraft.highpassCutoffHz}
+	                                onChange={(e) => updateFilterParam('highpassCutoffHz', parseFloat(e.target.value))}
+	                                className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                              />
+	                            </label>
+	                          )}
+	                          {preprocessMode === 'bandpass' && (
+	                            <>
+	                              <label className="premium-card-inner p-2 block">
+	                                <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Banda min Hz</span>
+	                                <input
+	                                  type="number"
+	                                  min="0"
+	                                  step="0.05"
+	                                  value={filterParamDraft.bandpassLowHz}
+	                                  onChange={(e) => updateFilterParam('bandpassLowHz', parseFloat(e.target.value))}
+	                                  className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                                />
+	                              </label>
+	                              <label className="premium-card-inner p-2 block">
+	                                <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Banda max Hz</span>
+	                                <input
+	                                  type="number"
+	                                  min="0.001"
+	                                  step="0.1"
+	                                  value={filterParamDraft.bandpassHighHz}
+	                                  onChange={(e) => updateFilterParam('bandpassHighHz', parseFloat(e.target.value))}
+	                                  className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                                />
+	                              </label>
+	                            </>
+	                          )}
+	                          {(preprocessMode === 'notch' || preprocessMode === 'harmonic_notch') && (
+	                            <>
+	                              <label className="premium-card-inner p-2 block">
+	                                <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Notch Hz</span>
+	                                <input
+	                                  type="number"
+	                                  min="0.001"
+	                                  step="0.1"
+	                                  value={filterParamDraft.notchFreqHz}
+	                                  onChange={(e) => updateFilterParam('notchFreqHz', parseFloat(e.target.value))}
+	                                  className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                                />
+	                              </label>
+	                              <label className="premium-card-inner p-2 block">
+	                                <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Q</span>
+	                                <input
+	                                  type="number"
+	                                  min="1"
+	                                  step="1"
+	                                  value={filterParamDraft.notchQ}
+	                                  onChange={(e) => updateFilterParam('notchQ', parseFloat(e.target.value))}
+	                                  className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                                />
+	                              </label>
+	                            </>
+	                          )}
+	                          {preprocessMode === 'harmonic_notch' && (
+	                            <label className="premium-card-inner p-2 block col-span-2">
+	                              <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Armónicos</span>
+	                              <input
+	                                type="number"
+	                                min="1"
+	                                max="20"
+	                                step="1"
+	                                value={filterParamDraft.harmonicCount}
+	                                onChange={(e) => updateFilterParam('harmonicCount', parseFloat(e.target.value))}
+	                                className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                              />
+	                            </label>
+	                          )}
+	                        </div>
+	                      )}
+
+	                      {showRobustFilterControls && (
+	                        <div className="grid grid-cols-3 gap-2">
+	                          {(preprocessMode === 'median') && (
+	                            <label className="premium-card-inner p-2 block">
+	                              <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Mediana N</span>
+	                              <input
+	                                type="number"
+	                                min="3"
+	                                step="2"
+	                                value={filterParamDraft.medianWindowSamples}
+	                                onChange={(e) => updateFilterParam('medianWindowSamples', parseFloat(e.target.value))}
+	                                className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                              />
+	                            </label>
+	                          )}
+	                          {(preprocessMode === 'hampel' || preprocessMode === 'impact_guard' || preprocessMode === 'anti_ski_slope') && (
+	                            <>
+	                              <label className="premium-card-inner p-2 block">
+	                                <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Hampel N</span>
+	                                <input
+	                                  type="number"
+	                                  min="3"
+	                                  step="2"
+	                                  value={filterParamDraft.hampelWindowSamples}
+	                                  onChange={(e) => updateFilterParam('hampelWindowSamples', parseFloat(e.target.value))}
+	                                  className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                                />
+	                              </label>
+	                              <label className="premium-card-inner p-2 block">
+	                                <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Sigma</span>
+	                                <input
+	                                  type="number"
+	                                  min="0.5"
+	                                  step="0.5"
+	                                  value={filterParamDraft.hampelSigma}
+	                                  onChange={(e) => updateFilterParam('hampelSigma', parseFloat(e.target.value))}
+	                                  className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                                />
+	                              </label>
+	                            </>
+	                          )}
+	                          {(preprocessMode === 'mad_despike' || preprocessMode === 'impact_guard' || preprocessMode === 'anti_ski_slope') && (
+	                            <label className="premium-card-inner p-2 block">
+	                              <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">MAD</span>
+	                              <input
+	                                type="number"
+	                                min="1"
+	                                step="0.5"
+	                                value={filterParamDraft.madThreshold}
+	                                onChange={(e) => updateFilterParam('madThreshold', parseFloat(e.target.value))}
+	                                className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                              />
+	                            </label>
+	                          )}
+	                        </div>
+	                      )}
+
+	                      {showSmoothingFilterControls && (
+	                        <div className="grid grid-cols-2 gap-2">
+	                          {(preprocessMode === 'moving_average') && (
+	                            <label className="premium-card-inner p-2 block">
+	                              <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Media N</span>
+	                              <input
+	                                type="number"
+	                                min="3"
+	                                step="2"
+	                                value={filterParamDraft.smoothingWindowSamples}
+	                                onChange={(e) => updateFilterParam('smoothingWindowSamples', parseFloat(e.target.value))}
+	                                className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                              />
+	                            </label>
+	                          )}
+	                          {(preprocessMode === 'savgol') && (
+	                            <label className="premium-card-inner p-2 block">
+	                              <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Sav-Gol N</span>
+	                              <input
+	                                type="number"
+	                                min="5"
+	                                step="2"
+	                                value={filterParamDraft.savgolWindowSamples}
+	                                onChange={(e) => updateFilterParam('savgolWindowSamples', parseFloat(e.target.value))}
+	                                className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                              />
+	                            </label>
+	                          )}
+	                          {(preprocessMode === 'exponential') && (
+	                            <label className="premium-card-inner p-2 block">
+	                              <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Alpha</span>
+	                              <input
+	                                type="number"
+	                                min="0.001"
+	                                max="1"
+	                                step="0.05"
+	                                value={filterParamDraft.exponentialAlpha}
+	                                onChange={(e) => updateFilterParam('exponentialAlpha', parseFloat(e.target.value))}
+	                                className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+	                              />
+	                            </label>
+	                          )}
+	                        </div>
+	                      )}
+	                    </div>
+	                  )}
+
+	                  <div className="rounded-xl border border-accent-primary/10 bg-white/65 dark:bg-black/10 px-3 py-2 text-[9px] font-mono font-bold text-accent-primary leading-relaxed">
+	                    {analysisStatus}
+	                  </div>
+	                  <div className="rounded-xl border border-cyan-500/10 bg-cyan-500/5 px-3 py-2 text-[9px] font-mono font-bold text-cyan-600 dark:text-cyan-300 leading-relaxed">
+	                    {vibrationBackendStatus}
+	                  </div>
                 </div>
-              </div>
 
-              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar px-3 lg:px-6 py-3 lg:py-4 pb-6 space-y-3 lg:space-y-4">
                 <section className="premium-card p-3 space-y-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0">
@@ -3907,7 +4968,13 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                         <input
                           type="number"
                           value={freqRange[0]}
-                          onChange={(e) => setFreqRange(prev => [parseFloat(e.target.value), prev[1]])}
+                          onChange={(e) => {
+                            setFreqRange(prev => [parseFloat(e.target.value), prev[1]]);
+                            setAnalysisResults(null);
+                            setLastAnalysisMeta(null);
+                            setVibrationBackendResults({});
+                            setVibrationBackendStatus('enDAQ pendiente: rango de frecuencia actualizado.');
+                          }}
                           className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
                         />
                       </label>
@@ -3916,7 +4983,13 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                         <input
                           type="number"
                           value={freqRange[1]}
-                          onChange={(e) => setFreqRange(prev => [prev[0], parseFloat(e.target.value)])}
+                          onChange={(e) => {
+                            setFreqRange(prev => [prev[0], parseFloat(e.target.value)]);
+                            setAnalysisResults(null);
+                            setLastAnalysisMeta(null);
+                            setVibrationBackendResults({});
+                            setVibrationBackendStatus('enDAQ pendiente: rango de frecuencia actualizado.');
+                          }}
                           className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
                         />
                       </label>
@@ -3934,7 +5007,7 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                             onChange={(e) => {
                               setIntegrationOutput(e.target.value as IntegrationOutputMode);
                               setActiveView('integration');
-                              setAnalysisStatus('Integración dinámica recalculada localmente.');
+                              setAnalysisStatus('Vista de integración actualizada; enDAQ se usará al analizar.');
                             }}
                             className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
                           >
@@ -3965,6 +5038,10 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                             onChange={(e) => {
                               const next = parseFloat(e.target.value);
                               setIntegrationHighpassHz(Number.isFinite(next) ? Math.max(0, next) : 0);
+                              setAnalysisResults(null);
+                              setLastAnalysisMeta(null);
+                              setVibrationBackendResults({});
+                              setVibrationBackendStatus('enDAQ pendiente: drift/high-pass actualizado.');
                             }}
                             className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
                           />
@@ -4172,7 +5249,7 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <Database size={14} className="text-accent-secondary" />
-                      <h2 className="text-[10px] font-display font-black text-gray-500 dark:text-gray-400 uppercase tracking-[0.2em]">Cálculos locales</h2>
+                      <h2 className="text-[10px] font-display font-black text-gray-500 dark:text-gray-400 uppercase tracking-[0.2em]">Historial de cálculos</h2>
                     </div>
                     {savedAnalyses.length > 0 && (
                       <button onClick={clearSavedAnalyses} className="text-[9px] font-mono font-black uppercase tracking-wider text-red-500 hover:text-red-400">Limpiar</button>
@@ -4193,10 +5270,10 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                             <div className="text-[10px] font-mono font-black text-gray-800 dark:text-gray-100 truncate">{saved.label}</div>
                             <div className="text-[9px] font-mono font-bold text-gray-400 mt-0.5">
                               {formatRange(saved.start, saved.end)} · {saved.samples} muestras
-                            </div>
-                            <div className="text-[8px] font-mono font-bold text-gray-400 mt-0.5">
-                              {PREPROCESS_LABELS[saved.preprocessMode] ?? 'Pretratamiento anterior'} · {FFT_WINDOW_LABELS[saved.fftWindowType] ?? 'Ventana anterior'}
-                            </div>
+	                            </div>
+	                            <div className="text-[8px] font-mono font-bold text-gray-400 mt-0.5">
+	                              {formatPreprocessPipeline(getPreprocessModesFromSaved(saved))} · {FFT_WINDOW_LABELS[saved.fftWindowType] ?? 'Ventana anterior'}
+	                            </div>
                             <div className="text-[8px] font-mono font-bold text-gray-400 mt-0.5">{formatTimestamp(saved.createdAt)}</div>
                           </div>
                           <button onClick={() => removeSavedAnalysis(saved.id)} className="text-red-500 hover:text-red-400 text-xs font-black">✕</button>

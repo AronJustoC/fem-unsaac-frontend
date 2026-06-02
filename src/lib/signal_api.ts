@@ -1,7 +1,58 @@
 // signal_api.ts - API client for SignalCore endpoints
 // Backend: /api/signal/*
 
-const API_BASE_URL = import.meta.env.PUBLIC_API_URL || 'http://localhost:8000';
+const CONFIGURED_API_BASE_URL = import.meta.env.PUBLIC_API_URL || 'http://localhost:8000';
+const LOCAL_SIGNAL_API_BASE_URLS = [
+  'http://localhost:8000',
+  'http://127.0.0.1:8000',
+  'http://localhost:10000',
+  'http://127.0.0.1:10000',
+];
+
+const trimTrailingSlash = (url: string) => url.replace(/\/+$/, '');
+
+const isLocalBrowser = () => {
+  if (typeof window === 'undefined') return false;
+  return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+};
+
+const isLoopbackUrl = (url: string) => {
+  try {
+    const { hostname } = new URL(url);
+    return ['localhost', '127.0.0.1', '::1'].includes(hostname);
+  } catch {
+    return false;
+  }
+};
+
+const getSignalApiBaseCandidates = () => {
+  const configured = trimTrailingSlash(CONFIGURED_API_BASE_URL);
+  const localCandidates = LOCAL_SIGNAL_API_BASE_URLS.map(trimTrailingSlash);
+  const ordered = isLocalBrowser() && !isLoopbackUrl(configured)
+    ? [...localCandidates, configured]
+    : [configured, ...localCandidates];
+  return Array.from(new Set(ordered.filter(Boolean)));
+};
+
+async function fetchSignalApi(path: string, options: RequestInit = {}): Promise<Response> {
+  const candidates = getSignalApiBaseCandidates();
+  let lastError: unknown = null;
+
+  for (const baseUrl of candidates) {
+    try {
+      return await fetch(`${baseUrl}${path}`, options);
+    } catch (err) {
+      if (options.signal?.aborted) throw err;
+      lastError = err;
+    }
+  }
+
+  const details = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(
+    `No se pudo conectar al backend SignalCore (${path}). ` +
+    `URLs probadas: ${candidates.join(', ')}. ${details}`
+  );
+}
 
 export interface SignalData {
   time_data: number[];
@@ -333,7 +384,7 @@ export interface VibrationDataAnalysisResult {
 
 // API Functions
 export async function importSignalData(data: SignalData): Promise<any> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/import`, {
+  const response = await fetchSignalApi(`/api/signal/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -347,7 +398,7 @@ export async function computeFFT(
   windowType: string = 'hanning',
   freqRange?: [number, number]
 ): Promise<FFTResult> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/fft`, {
+  const response = await fetchSignalApi(`/api/signal/fft`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -367,7 +418,7 @@ export async function computePSD(
   samplingRate: number,
   nperseg?: number
 ): Promise<PSDResult> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/psd`, {
+  const response = await fetchSignalApi(`/api/signal/psd`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -385,7 +436,7 @@ export async function computeVibrationDataAnalysis(
   config: VibrationDataAnalysisRequest,
   signal?: AbortSignal
 ): Promise<VibrationDataAnalysisResult> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/vibrationdata-analysis`, {
+  const response = await fetchSignalApi(`/api/signal/vibrationdata-analysis`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal,
@@ -412,7 +463,7 @@ export async function computeVibrationDataAnalysis(
 }
 
 export async function applyFilter(config: FilterConfig): Promise<FilterResult> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/filter`, {
+  const response = await fetchSignalApi(`/api/signal/filter`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -442,7 +493,7 @@ export async function integrateSignal(
   doubleIntegrate: boolean = false,
   highpassFreq: number = 0.5
 ): Promise<IntegrationResult> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/integrate`, {
+  const response = await fetchSignalApi(`/api/signal/integrate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -462,7 +513,7 @@ export async function computeEnvelope(
   lowFreq: number = 10,
   highFreq: number = 100
 ): Promise<EnvelopeResult> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/envelope`, {
+  const response = await fetchSignalApi(`/api/signal/envelope`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -482,7 +533,7 @@ export async function computeCepstrum(
   minQuefrency: number = 0.01,
   maxQuefrency: number = 10
 ): Promise<CepstrumResult> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/cepstrum`, {
+  const response = await fetchSignalApi(`/api/signal/cepstrum`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -502,7 +553,7 @@ export async function computeWaterfall(
   overlapRatio: number = 0.75,
   maxFreq?: number
 ): Promise<WaterfallResult> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/waterfall`, {
+  const response = await fetchSignalApi(`/api/signal/waterfall`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -530,7 +581,7 @@ export async function fullBridgeAnalysis(
     detrend?: boolean;
   }
 ): Promise<FullAnalysisResult> {
-  const response = await fetch(`${API_BASE_URL}/api/signal/analyze/full`, {
+  const response = await fetchSignalApi(`/api/signal/analyze/full`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

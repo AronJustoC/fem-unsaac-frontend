@@ -1350,6 +1350,8 @@ const formatTimestamp = (iso: string) => {
   }
 };
 
+const getErrorMessage = (err: unknown) => err instanceof Error ? err.message : String(err);
+
 const rangesMatch = (aStart: number, aEnd: number, bStart: number, bEnd: number) =>
   Math.abs(aStart - bStart) < 1e-6 && Math.abs(aEnd - bEnd) < 1e-6;
 
@@ -2512,10 +2514,11 @@ const SignalProcessingContent: React.FC = () => {
       if (allData.time.length < 2) {
         throw new Error('Selecciona una ventana con al menos 2 muestras para analizar.');
       }
+      const backendChannels = getChannelsForBackendAnalysis();
 
       const cached = savedAnalyses.find(item => item.cacheKey === cacheKey);
       if (cached) {
-        await requestVibrationBackendAnalysis(getChannelsForBackendAnalysis());
+        await requestVibrationBackendAnalysis(backendChannels);
         setAnalysisResults(cached.result);
         setLastAnalysisMeta(cached);
         setAnalysisStatus(`Resultado cargado desde caché del navegador: ${cached.label}`);
@@ -2524,20 +2527,38 @@ const SignalProcessingContent: React.FC = () => {
       }
 
       setAnalysisStatus(`Analizando ${meta.label}: ${formatRange(meta.start, meta.end)} (${meta.samples} muestras).`);
-      const results = await fullBridgeAnalysis(
-        allData.time,
-        allData.acc_x,
-        allData.acc_y,
-        allData.acc_z,
-        samplingRate,
-        unit,
-        fileName,
-        sensorLocation,
-        {
-          windowType: fftWindowType,
-          detrend: false,
-        }
-      );
+      await requestVibrationBackendAnalysis(backendChannels);
+
+      let results: FullAnalysisResult | null = null;
+      let summaryError: string | null = null;
+      try {
+        results = await fullBridgeAnalysis(
+          allData.time,
+          allData.acc_x,
+          allData.acc_y,
+          allData.acc_z,
+          samplingRate,
+          unit,
+          fileName,
+          sensorLocation,
+          {
+            windowType: fftWindowType,
+            detrend: false,
+          }
+        );
+      } catch (err) {
+        summaryError = getErrorMessage(err);
+      }
+
+      if (!results) {
+        setAnalysisResults(null);
+        setLastAnalysisMeta(null);
+        setAnalysisStatus(
+          `enDAQ actualizado para las gráficas. Resumen completo no disponible: ${summaryError ?? 'sin respuesta del backend.'}`
+        );
+        setError(null);
+        return;
+      }
 
       const saved: SavedAnalysis = {
         id: `analysis_${Date.now()}`,
@@ -2558,14 +2579,13 @@ const SignalProcessingContent: React.FC = () => {
         result: results,
       };
 
-      await requestVibrationBackendAnalysis(getChannelsForBackendAnalysis());
       setAnalysisResults(results);
       setLastAnalysisMeta(saved);
       setSavedAnalyses(prev => [saved, ...prev.filter(item => item.cacheKey !== cacheKey)].slice(0, MAX_SAVED_ANALYSES));
       setAnalysisStatus(`Análisis completado; resultados enDAQ actualizados: ${saved.label}`);
       setError(null);
     } catch (err) {
-      setError(String(err));
+      setError(getErrorMessage(err));
       setAnalysisStatus('El análisis no se completó. Revise el rango y los datos.');
     } finally {
       setIsLoading(false);

@@ -152,6 +152,17 @@ type VibrationBackendChannelState = {
   result: VibrationDataAnalysisResult;
 };
 
+type SpectralSummaryRow = {
+  rank: number;
+  channel: string;
+  source: 'PSD Welch' | 'Aggregate FFT';
+  frequencyHz: number;
+  energyValue: number | null;
+  energyUnit: string;
+  amplitudeValue: number | null;
+  amplitudeUnit: string;
+};
+
 interface SignalFilterParams {
   lowpassCutoffHz: number;
   highpassCutoffHz: number;
@@ -518,6 +529,74 @@ const buildVibrationSpectraFromBackend = (
   velocity: normalizeBackendFftSpectrum(result?.[source]?.velocity),
   displacement: normalizeBackendFftSpectrum(result?.[source]?.displacement),
 });
+
+const findNearestSpectrumAmplitude = (
+  spectrum: VibrationDataFftSpectrum | undefined,
+  frequencyHz: number
+) => {
+  const frequencies = spectrum?.frequencies ?? [];
+  const amplitudes = spectrum?.amplitudes ?? [];
+  if (frequencies.length === 0 || amplitudes.length === 0) return null;
+
+  let nearestIndex = -1;
+  let nearestDelta = Infinity;
+  for (let i = 0; i < frequencies.length && i < amplitudes.length; i++) {
+    const frequency = frequencies[i];
+    if (!Number.isFinite(frequency)) continue;
+    const delta = Math.abs(frequency - frequencyHz);
+    if (delta < nearestDelta) {
+      nearestDelta = delta;
+      nearestIndex = i;
+    }
+  }
+
+  if (nearestIndex < 0) return null;
+  const amplitude = amplitudes[nearestIndex];
+  return Number.isFinite(amplitude) ? amplitude : null;
+};
+
+const buildSpectralSummaryRows = (
+  result: VibrationDataAnalysisResult | null,
+  channel: string,
+  limit = 10
+): SpectralSummaryRow[] => {
+  if (!result) return [];
+
+  const aggregateSpectrum = result.aggregate_fft?.acceleration;
+  const psdSpectrum = result.psd?.acceleration;
+  const psdPeaks = [...(psdSpectrum?.peaks ?? [])]
+    .filter((peak) => Number.isFinite(peak.frequency_hz) && Number.isFinite(peak.amplitude))
+    .sort((a, b) => b.amplitude - a.amplitude)
+    .slice(0, limit);
+
+  if (psdPeaks.length > 0) {
+    return psdPeaks.map((peak, index) => ({
+      rank: index + 1,
+      channel,
+      source: 'PSD Welch',
+      frequencyHz: peak.frequency_hz,
+      energyValue: peak.amplitude,
+      energyUnit: psdSpectrum?.unit ?? 'unit²/Hz',
+      amplitudeValue: findNearestSpectrumAmplitude(aggregateSpectrum, peak.frequency_hz),
+      amplitudeUnit: aggregateSpectrum?.unit ?? 'G',
+    }));
+  }
+
+  return [...(aggregateSpectrum?.peaks ?? [])]
+    .filter((peak) => Number.isFinite(peak.frequency_hz) && Number.isFinite(peak.amplitude))
+    .sort((a, b) => b.amplitude - a.amplitude)
+    .slice(0, limit)
+    .map((peak, index) => ({
+      rank: index + 1,
+      channel,
+      source: 'Aggregate FFT',
+      frequencyHz: peak.frequency_hz,
+      energyValue: null,
+      energyUnit: '—',
+      amplitudeValue: peak.amplitude,
+      amplitudeUnit: aggregateSpectrum?.unit ?? 'G',
+    }));
+};
 
 const fftInPlace = (real: Float64Array, imag: Float64Array) => {
   const n = real.length;
@@ -1371,6 +1450,7 @@ const SignalProcessingContent: React.FC = () => {
   const [analysisResults, setAnalysisResults] = useState<FullAnalysisResult | null>(null);
   const [vibrationBackendResults, setVibrationBackendResults] = useState<Partial<Record<Channel, VibrationBackendChannelState>>>({});
   const [vibrationBackendStatus, setVibrationBackendStatus] = useState('enDAQ listo: ejecute Analyze para calcular FFT/PSD/A-V-D.');
+  const [showSpectralSummary, setShowSpectralSummary] = useState(false);
 
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
@@ -4299,6 +4379,7 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
 
   const activeViewLabel = viewOptions.find(view => view.id === activeView)?.label ?? 'Tiempo';
   const activeChannelLabel = channelOptions.find(channel => channel.id === activeChannel)?.label ?? activeChannel.toUpperCase();
+  const spectralSummaryRows = buildSpectralSummaryRows(activeVibrationBackendResult, activeChannelLabel);
   const activePreprocessModes = normalizePreprocessModes(preprocessModes);
   const activePreprocessLabel = formatPreprocessPipeline(activePreprocessModes);
   const showSpectralControls = activeView === 'fft'
@@ -5360,12 +5441,25 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                       Analizando: {activeAnalysisWindow.label} · {formatRange(activeAnalysisWindow.start, activeAnalysisWindow.end)}
                     </p>
                   </div>
-                  <div className="hidden sm:flex items-center gap-3 text-[9px] lg:text-[10px] font-mono font-bold text-gray-400 uppercase tracking-wider shrink-0">
-                    <span>fs: {samplingRate} Hz</span>
-                    <span className="text-border-light dark:text-border-dark">|</span>
-                    <span>{activeAnalysisWindow.duration.toFixed(2)}s</span>
-                    <span className="text-border-light dark:text-border-dark">|</span>
-                    <span>{segments.length} ventanas</span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <div className="hidden sm:flex items-center gap-3 text-[9px] lg:text-[10px] font-mono font-bold text-gray-400 uppercase tracking-wider">
+                      <span>fs: {samplingRate} Hz</span>
+                      <span className="text-border-light dark:text-border-dark">|</span>
+                      <span>{activeAnalysisWindow.duration.toFixed(2)}s</span>
+                      <span className="text-border-light dark:text-border-dark">|</span>
+                      <span>{segments.length} ventanas</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!activeVibrationBackendResult}
+                      onClick={() => setShowSpectralSummary(true)}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-accent-primary/20 bg-accent-primary/10 px-3 py-2 text-[9px] font-display font-black uppercase tracking-wider text-accent-primary transition-all hover:bg-accent-primary/15 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={activeVibrationBackendResult ? 'Ver frecuencias más energéticas' : 'Ejecute Analyze para generar el resumen'}
+                    >
+                      <Table2 size={13} />
+                      <span className="hidden md:inline">Resumen espectral</span>
+                      <span className="md:hidden">Resumen</span>
+                    </button>
                   </div>
                 </div>
 
@@ -5555,83 +5649,93 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                   </div>
                 </div>
 
-                <div className="shrink-0 border-t border-border-light dark:border-border-dark px-4 lg:px-7 py-3 lg:py-4">
-                  {signalData ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2 lg:gap-3">
-                      {(() => {
-                        const metrics = activeView === 'integration'
-                          ? [
-                            { label: 'Muestras ventana', value: currentMetrics.points.toString(), color: 'text-gray-900 dark:text-white' },
-                            { label: 'V pico', value: `${formatEngineeringValue(kinematicsData.velocityStats.maxAbs)} m/s`, color: 'text-cyan-500' },
-                            { label: 'V RMS', value: `${formatEngineeringValue(kinematicsData.velocityStats.rms)} m/s`, color: 'text-accent-secondary' },
-                            { label: 'U pico', value: `${formatEngineeringValue(kinematicsData.displacementStats.maxAbs * displacementDisplayFactor)} ${displacementDisplayLabel}`, color: 'text-accent-primary' },
-                            { label: 'U RMS', value: `${formatEngineeringValue(kinematicsData.displacementStats.rms * displacementDisplayFactor)} ${displacementDisplayLabel}`, color: 'text-purple-500' },
-                            { label: 'Deriva', value: kinematicsData.driftWarning ? 'Revisar' : 'OK', color: kinematicsData.driftWarning ? 'text-accent-danger' : 'text-unsaac-gold' },
-                          ]
-                          : [
-                            { label: 'Muestras ventana', value: currentMetrics.points.toString(), color: 'text-gray-900 dark:text-white' },
-                            { label: 'Máximo', value: currentMetrics.max.toFixed(4), color: 'text-accent-primary' },
-                            { label: 'Mínimo', value: currentMetrics.min.toFixed(4), color: 'text-accent-danger' },
-                            { label: 'RMS', value: currentMetrics.rms.toFixed(4), color: 'text-accent-secondary' },
-                            { label: 'Ventanas', value: segments.length.toString(), color: 'text-purple-500' },
-                            { label: 'Duración ventana', value: `${activeAnalysisWindow.duration.toFixed(2)}s`, color: 'text-unsaac-gold' },
-                          ];
-                        return metrics.map(metric => (
-                          <div key={metric.label} className="premium-card-inner p-3 text-center">
-                            <div className={`text-sm lg:text-xl font-display font-black tracking-tight ${metric.color}`}>{metric.value}</div>
-                            <div className="mt-1 text-[8px] font-mono font-bold uppercase tracking-wider text-gray-500">{metric.label}</div>
-                          </div>
-                        ));
-                      })()}
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center gap-2 text-[9px] lg:text-[10px] font-mono font-black uppercase tracking-[0.25em] text-gray-400">
-                      <Waves size={14} className="text-accent-primary" />
-                      Awaiting signal input
-                    </div>
-                  )}
-
-                  {analysisResults && (
-                    <div className="mt-3 space-y-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                      <div className="premium-card-inner p-3 border-accent-primary/20">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-[8px] font-mono font-black uppercase tracking-[0.22em] text-gray-500">Último cálculo</div>
-                            <div className="mt-1 text-sm font-display font-black text-gray-900 dark:text-white truncate">{lastAnalysisMeta?.label ?? activeAnalysisWindow.label}</div>
-                            <div className="mt-0.5 text-[9px] font-mono font-bold text-gray-400">
-                              {lastAnalysisMeta ? formatRange(lastAnalysisMeta.start, lastAnalysisMeta.end) : formatRange(activeAnalysisWindow.start, activeAnalysisWindow.end)}
-                            </div>
-                          </div>
-                          <div className="shrink-0 rounded-full bg-accent-secondary/10 px-2.5 py-1 text-[8px] font-mono font-black uppercase tracking-wider text-accent-secondary">
-                            Guardado local
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 lg:gap-3">
-                        <div className="premium-card-inner p-3 text-center border-accent-secondary/20">
-                          <div className="text-lg font-display font-black text-accent-secondary">{analysisResults.natural_frequencies?.fundamental_freq_hz?.toFixed(3) || 'N/A'}</div>
-                          <div className="text-[8px] font-mono font-bold uppercase text-gray-500">Frec. fundamental</div>
-                        </div>
-                        <div className="premium-card-inner p-3 text-center border-accent-primary/20">
-                          <div className="text-lg font-display font-black text-accent-primary">{analysisResults.file_info.duration_s.toFixed(1)}s</div>
-                          <div className="text-[8px] font-mono font-bold uppercase text-gray-500">Duración analizada</div>
-                        </div>
-                        <div className="premium-card-inner p-3 text-center border-purple-500/20">
-                          <div className="text-lg font-display font-black text-purple-500">{analysisResults.file_info.n_samples}</div>
-                          <div className="text-[8px] font-mono font-bold uppercase text-gray-500">Muestras analizadas</div>
-                        </div>
-                        <div className="premium-card-inner p-3 text-center border-unsaac-gold/20">
-                          <div className="text-lg font-display font-black text-unsaac-gold">{analysisResults.observations.length}</div>
-                          <div className="text-[8px] font-mono font-bold uppercase text-gray-500">Observaciones</div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
               </div>
             </section>
           </div>
         </main>
+
+        {showSpectralSummary && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[80] p-4 backdrop-blur-sm">
+            <div className="bg-white dark:bg-bg-dark-panel rounded-[2rem] border border-border-light dark:border-border-dark p-5 lg:p-6 max-w-5xl w-full shadow-2xl">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border-light dark:border-border-dark pb-4">
+                <div>
+                  <h3 className="text-lg lg:text-xl font-display font-black text-gray-900 dark:text-white uppercase tracking-tight flex items-center gap-2">
+                    <Table2 size={20} className="text-accent-primary" />
+                    Resumen espectral
+                  </h3>
+                  <p className="mt-1 text-[9px] font-mono font-bold uppercase tracking-[0.18em] text-gray-400">
+                    Top frecuencias por energía PSD Welch · amplitud cercana desde Aggregate FFT · {activeChannelLabel}
+                  </p>
+                </div>
+                <div className="text-right text-[9px] font-mono font-black uppercase tracking-[0.18em] text-gray-400">
+                  <div>{activeAnalysisWindow.label}</div>
+                  <div className="mt-1">{formatRange(activeAnalysisWindow.start, activeAnalysisWindow.end)}</div>
+                </div>
+              </div>
+
+              <div className="mt-4 max-h-[58vh] overflow-auto custom-scrollbar rounded-2xl border border-border-light dark:border-border-dark">
+                {spectralSummaryRows.length > 0 ? (
+                  <table className="min-w-full divide-y divide-border-light dark:divide-border-dark text-left">
+                    <thead className="sticky top-0 bg-gray-50 dark:bg-bg-dark z-10">
+                      <tr className="text-[8px] font-mono font-black uppercase tracking-[0.2em] text-gray-500">
+                        <th className="px-3 py-3">#</th>
+                        <th className="px-3 py-3">Canal</th>
+                        <th className="px-3 py-3">Fuente</th>
+                        <th className="px-3 py-3 text-right">Frecuencia Hz</th>
+                        <th className="px-3 py-3 text-right">Energía PSD</th>
+                        <th className="px-3 py-3 text-right">Amplitud FFT</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border-light dark:divide-border-dark bg-white dark:bg-bg-dark-panel">
+                      {spectralSummaryRows.map((row) => (
+                        <tr key={`${row.source}_${row.rank}_${row.frequencyHz}`} className="text-xs font-mono text-gray-700 dark:text-gray-200">
+                          <td className="px-3 py-3 font-black text-accent-primary">{row.rank}</td>
+                          <td className="px-3 py-3 font-bold">{row.channel}</td>
+                          <td className="px-3 py-3">
+                            <span className="rounded-full bg-accent-primary/10 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-accent-primary">
+                              {row.source}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 text-right font-black">{row.frequencyHz.toFixed(3)}</td>
+                          <td className="px-3 py-3 text-right">
+                            {row.energyValue == null ? '—' : `${formatEngineeringValue(row.energyValue)} ${row.energyUnit}`}
+                          </td>
+                          <td className="px-3 py-3 text-right font-black text-accent-secondary">
+                            {row.amplitudeValue == null ? '—' : `${formatEngineeringValue(row.amplitudeValue)} ${row.amplitudeUnit}`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="flex min-h-[180px] flex-col items-center justify-center p-8 text-center">
+                    <Table2 size={34} className="text-gray-300 dark:text-gray-600" />
+                    <p className="mt-3 text-xs font-display font-black uppercase tracking-wider text-gray-500 dark:text-gray-300">
+                      Todavía no hay picos espectrales disponibles
+                    </p>
+                    <p className="mt-2 text-[10px] font-mono font-bold uppercase tracking-[0.16em] text-gray-400">
+                      Ejecute Analyze para calcular PSD/Aggregate FFT con enDAQ.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <p className="text-[9px] font-mono font-bold uppercase tracking-[0.16em] text-gray-400">
+                  {activeVibrationBackendResult
+                    ? `Engine: ${activeVibrationBackendResult.engine.name} ${activeVibrationBackendResult.engine.version}`
+                    : 'Engine pendiente'}
+                </p>
+                <button
+                  onClick={() => setShowSpectralSummary(false)}
+                  className="px-4 py-2 rounded-xl bg-accent-primary hover:bg-accent-primary/90 text-white font-display font-black uppercase text-xs tracking-wider transition-all active:scale-95"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {showExportModal && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[80] p-4 backdrop-blur-sm">

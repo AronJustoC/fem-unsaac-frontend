@@ -56,10 +56,36 @@ export interface SpectralPeak {
 export interface FilterConfig {
   amplitude: number[];
   sampling_rate: number;
-  filter_type: 'lowpass' | 'highpass' | 'bandpass' | 'bandstop' | 'notch' | 'comb';
+  filter_type:
+    | 'lowpass'
+    | 'highpass'
+    | 'bandpass'
+    | 'bandstop'
+    | 'notch'
+    | 'comb'
+    | 'harmonic_notch'
+    | 'demean'
+    | 'detrend'
+    | 'median'
+    | 'hampel'
+    | 'mad_despike'
+    | 'impact_guard'
+    | 'anti_ski_slope'
+    | 'moving_average'
+    | 'exponential'
+    | 'savgol';
   order?: number;
   cutoff_low?: number;
   cutoff_high?: number;
+  notch_freq?: number;
+  quality_factor?: number;
+  n_harmonics?: number;
+  bandwidth?: number;
+  window_size?: number;
+  sigma?: number;
+  mad_threshold?: number;
+  alpha?: number;
+  polyorder?: number;
 }
 
 export interface FilterResult {
@@ -68,6 +94,7 @@ export interface FilterResult {
   filter_type: string;
   order: number;
   cutoff: number | [number, number];
+  parameters?: Record<string, number | null>;
 }
 
 export interface IntegrationResult {
@@ -177,6 +204,133 @@ export interface FullAnalysisResult {
   recommendations: string[];
 }
 
+export interface VibrationDataAnalysisRequest {
+  acceleration: number[];
+  sampling_rate?: number;
+  time?: number[];
+  unit?: string;
+  bin_width?: number;
+  window?: string;
+  overlap?: number;
+  highpass_hz?: number;
+  freq_range?: [number, number];
+  zero_low_frequency_bins?: number;
+}
+
+export interface VibrationDataEngineInfo {
+  name: string;
+  version: string;
+  core_functions: string[];
+}
+
+export interface VibrationDataStats {
+  mean: number;
+  rms: number;
+  peak_abs: number;
+  peak_to_peak: number;
+}
+
+export interface VibrationDataTimeHistories {
+  time: number[];
+  acceleration_g: number[];
+  acceleration_conditioned_g: number[];
+  velocity_mm_s: number[];
+  displacement_mm: number[];
+  units: {
+    acceleration: string;
+    velocity: string;
+    displacement: string;
+  };
+  stats: {
+    acceleration_g: VibrationDataStats;
+    acceleration_conditioned_g: VibrationDataStats;
+    velocity_mm_s: VibrationDataStats;
+    displacement_mm: VibrationDataStats;
+  };
+  method: {
+    integration: string;
+    engine: string;
+    endaq_version: string;
+    highpass_hz: number;
+    acceleration_detrend: string;
+    integration_zero: string;
+  };
+  drift: {
+    raw_displacement_final_minus_initial_m: number;
+    drift_ratio: number;
+    warning: boolean;
+  };
+}
+
+export interface VibrationDataPeak {
+  frequency_hz: number;
+  amplitude: number;
+}
+
+export interface VibrationDataFftSpectrum {
+  frequencies: number[];
+  amplitudes: number[];
+  phases_deg: number[];
+  phase_supported?: boolean;
+  peaks: VibrationDataPeak[];
+  unit: string;
+  engine: string;
+  window: string;
+  requested_window?: string;
+  detrend: string;
+  n_samples?: number;
+  frequency_resolution_hz?: number;
+  overall_rms_time?: number;
+  bin_width_hz?: number;
+  actual_bin_width_hz?: number;
+  n_segments?: number;
+  nperseg?: number;
+  noverlap?: number;
+}
+
+export interface VibrationDataPsdSpectrum {
+  frequencies: number[];
+  psd: number[];
+  peaks: VibrationDataPeak[];
+  unit: string;
+  input_unit: string;
+  method: string;
+  engine: string;
+  window: string;
+  detrend: string;
+  bin_width_hz: number;
+  actual_bin_width_hz: number;
+  nperseg: number;
+  noverlap: number;
+  rms_from_psd: number;
+  zero_low_frequency_bins: number;
+}
+
+export interface VibrationDataAnalysisResult {
+  success: boolean;
+  method: string;
+  engine: VibrationDataEngineInfo;
+  input: {
+    n_samples: number;
+    sampling_rate_hz: number;
+    duration_s: number;
+    unit: string;
+    inferred_sampling_rate: boolean;
+  };
+  settings: {
+    bin_width_hz: number;
+    window: string;
+    overlap: number;
+    highpass_hz: number;
+    freq_range: number[] | null;
+    zero_low_frequency_bins: number;
+  };
+  time_histories: VibrationDataTimeHistories;
+  fft: Record<'acceleration' | 'velocity' | 'displacement', VibrationDataFftSpectrum>;
+  aggregate_fft: Record<'acceleration' | 'velocity' | 'displacement', VibrationDataFftSpectrum>;
+  psd: Record<'acceleration' | 'velocity' | 'displacement', VibrationDataPsdSpectrum>;
+}
+
 // API Functions
 export async function importSignalData(data: SignalData): Promise<any> {
   const response = await fetch(`${API_BASE_URL}/api/signal/import`, {
@@ -227,6 +381,36 @@ export async function computePSD(
   return response.json();
 }
 
+export async function computeVibrationDataAnalysis(
+  config: VibrationDataAnalysisRequest,
+  signal?: AbortSignal
+): Promise<VibrationDataAnalysisResult> {
+  const response = await fetch(`${API_BASE_URL}/api/signal/vibrationdata-analysis`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({
+      acceleration: config.acceleration,
+      sampling_rate: config.sampling_rate,
+      time: config.time,
+      unit: config.unit ?? 'g',
+      bin_width: config.bin_width ?? 1.0,
+      window: config.window ?? 'hann',
+      overlap: config.overlap ?? 0.5,
+      highpass_hz: config.highpass_hz ?? 0.5,
+      freq_range: config.freq_range,
+      zero_low_frequency_bins: config.zero_low_frequency_bins ?? 0,
+    }),
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    const detail = typeof payload?.detail === 'string' ? payload.detail : 'No se pudo ejecutar el análisis enDAQ.';
+    throw new Error(detail);
+  }
+  return payload;
+}
+
 export async function applyFilter(config: FilterConfig): Promise<FilterResult> {
   const response = await fetch(`${API_BASE_URL}/api/signal/filter`, {
     method: 'POST',
@@ -238,6 +422,15 @@ export async function applyFilter(config: FilterConfig): Promise<FilterResult> {
       order: config.order || 4,
       cutoff_low: config.cutoff_low || 0.5,
       cutoff_high: config.cutoff_high || 20.0,
+      notch_freq: config.notch_freq ?? 60.0,
+      quality_factor: config.quality_factor ?? 30.0,
+      n_harmonics: config.n_harmonics ?? 3,
+      bandwidth: config.bandwidth ?? 0.5,
+      window_size: config.window_size ?? 11,
+      sigma: config.sigma ?? 3.0,
+      mad_threshold: config.mad_threshold ?? 6.0,
+      alpha: config.alpha ?? 0.2,
+      polyorder: config.polyorder ?? 2,
     }),
   });
   return response.json();

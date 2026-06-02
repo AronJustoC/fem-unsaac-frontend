@@ -1451,6 +1451,7 @@ const SignalProcessingContent: React.FC = () => {
   const [vibrationBackendResults, setVibrationBackendResults] = useState<Partial<Record<Channel, VibrationBackendChannelState>>>({});
   const [vibrationBackendStatus, setVibrationBackendStatus] = useState('enDAQ listo: ejecute Analyze para calcular FFT/PSD/A-V-D.');
   const [showSpectralSummary, setShowSpectralSummary] = useState(false);
+  const [showWindowModal, setShowWindowModal] = useState(false);
 
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
@@ -4465,6 +4466,36 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                   </div>
                 </div>
 
+                <button
+                  type="button"
+                  onClick={() => setShowWindowModal(true)}
+                  disabled={!signalData}
+                  className="mt-3 w-full rounded-2xl border border-accent-primary/20 bg-accent-primary/10 px-3 py-3 text-left transition-all hover:bg-accent-primary/15 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Scissors size={15} className="shrink-0 text-accent-primary" />
+                      <div className="min-w-0">
+                        <div className="text-[9px] font-display font-black uppercase tracking-[0.18em] text-accent-primary">
+                          Corte / ventana
+                        </div>
+                        <div className="mt-0.5 truncate text-[9px] font-mono font-bold text-gray-500 dark:text-gray-400">
+                          {formatRange(activeAnalysisWindow.start, activeAnalysisWindow.end)} · {activeAnalysisWindow.samples} muestras
+                        </div>
+                      </div>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2 py-1 text-[8px] font-mono font-black uppercase ${
+                      isFullRecordSelected
+                        ? 'bg-accent-primary/15 text-accent-primary'
+                        : activeAnalysisWindow.source === 'segment'
+                          ? 'bg-accent-secondary/15 text-accent-secondary'
+                          : 'bg-unsaac-gold/15 text-unsaac-gold'
+                    }`}>
+                      {isFullRecordSelected ? 'Todo' : activeAnalysisWindow.source === 'segment' ? 'Guardado' : 'Manual'}
+                    </span>
+                  </div>
+                </button>
+
                 {error && (
                   <div className="mt-3 p-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500 text-[10px] font-mono font-bold leading-relaxed">
                     {error}
@@ -4476,83 +4507,19 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                 <div className="premium-card p-3 space-y-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-start gap-2 min-w-0">
-                      <Scissors size={14} className="mt-0.5 text-accent-primary shrink-0" />
+                      <SlidersHorizontal size={14} className="mt-0.5 text-accent-primary shrink-0" />
                       <div className="min-w-0">
                         <div className="text-[8px] font-mono font-black uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400">
-                          Recorte de señal
+                          Tratamiento de señal
                         </div>
-                        <div className="mt-0.5 text-sm font-display font-black text-gray-900 dark:text-white truncate">
-                          {isFullRecordSelected ? 'Registro completo' : activeAnalysisWindow.label}
-                        </div>
-                        <div className="mt-0.5 text-[9px] font-mono font-bold text-gray-500 dark:text-gray-400">
-                          {formatRange(activeAnalysisWindow.start, activeAnalysisWindow.end)} · {activeAnalysisWindow.duration.toFixed(3)} s · {activeAnalysisWindow.samples} muestras
+                        <div className="mt-0.5 text-[9px] font-mono font-bold text-gray-500 dark:text-gray-400 leading-relaxed">
+                          Primero define el corte desde el botón superior; aquí solo editas filtros y parámetros de la gráfica.
                         </div>
                       </div>
                     </div>
-                    <span className={`rounded-full px-2 py-0.5 text-[8px] font-mono font-black uppercase shrink-0 ${
-                      isFullRecordSelected
-                        ? 'bg-accent-primary/15 text-accent-primary'
-                        : activeAnalysisWindow.source === 'segment'
-                          ? 'bg-accent-secondary/15 text-accent-secondary'
-                          : 'bg-unsaac-gold/15 text-unsaac-gold'
-                    }`}>
-                      {isFullRecordSelected ? 'Todo' : activeAnalysisWindow.source === 'segment' ? 'Guardado' : 'Manual'}
+                    <span className="rounded-full bg-accent-primary/10 border border-accent-primary/20 px-2 py-0.5 text-[8px] font-mono font-black uppercase tracking-wider text-accent-primary shrink-0">
+                      Señal
                     </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={selectFullRecordWindow}
-                      disabled={!signalData}
-                      className={`rounded-xl border px-2 py-2 text-[9px] font-display font-black uppercase tracking-wider transition-all ${
-                        isFullRecordSelected
-                          ? 'bg-accent-primary text-white border-accent-primary shadow-sm'
-                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-600 dark:text-gray-300 hover:border-accent-primary/40'
-                      } disabled:opacity-40 disabled:cursor-not-allowed`}
-                    >
-                      Todo el registro
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedSegment(null);
-                        setAnalysisResults(null);
-                        setLastAnalysisMeta(null);
-                        setAnalysisStatus('Recorte manual activo. Ajuste inicio/fin y presione Analyze.');
-                      }}
-                      disabled={!signalData}
-                      className={`rounded-xl border px-2 py-2 text-[9px] font-display font-black uppercase tracking-wider transition-all ${
-                        !isFullRecordSelected && activeAnalysisWindow.source === 'manual'
-                          ? 'bg-unsaac-gold/15 border-unsaac-gold/30 text-unsaac-gold'
-                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-600 dark:text-gray-300 hover:border-unsaac-gold/40'
-                      } disabled:opacity-40 disabled:cursor-not-allowed`}
-                    >
-                      Recorte manual
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="premium-card-inner p-2 block">
-                      <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Inicio (s)</span>
-                      <input
-                        type="number"
-                        step="0.001"
-                        value={timeRange[0]}
-                        onChange={(e) => setManualTimeWindow([parseFloat(e.target.value), timeRange[1]])}
-                        className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
-                      />
-                    </label>
-                    <label className="premium-card-inner p-2 block">
-                      <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Fin (s)</span>
-                      <input
-                        type="number"
-                        step="0.001"
-                        value={timeRange[1]}
-                        onChange={(e) => setManualTimeWindow([timeRange[0], parseFloat(e.target.value)])}
-                        className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
-                      />
-                    </label>
                   </div>
 
 	                  <div className="grid grid-cols-2 gap-2">
@@ -5274,77 +5241,6 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
                   )}
                 </section>
 
-                <section className="premium-card p-3 space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Scissors size={14} className="text-accent-danger shrink-0" />
-                      <div className="min-w-0">
-                        <h2 className="text-[10px] font-display font-black text-gray-500 dark:text-gray-400 uppercase tracking-[0.2em]">Cortes guardados</h2>
-                        <p className="text-[9px] font-mono font-bold text-gray-400 dark:text-gray-500 truncate">
-                          Reutiliza recortes frecuentes sin duplicar el panel principal.
-                        </p>
-                      </div>
-                    </div>
-                    {segments.length > 0 && (
-                      <button
-                        onClick={() => {
-                          setSegments([]);
-                          setSelectedSegment(null);
-                          setAnalysisStatus('Cortes guardados eliminados. Use el recorte manual o todo el registro.');
-                        }}
-                        className="text-[9px] font-mono font-black uppercase tracking-wider text-red-500 hover:text-red-400 shrink-0"
-                      >
-                        Borrar
-                      </button>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <input
-                      type="text"
-                      placeholder="Nombre opcional del corte"
-                      value={segmentDraft.label}
-                      onChange={(e) => setSegmentDraft(prev => ({ ...prev, label: e.target.value }))}
-                      className="min-w-0 px-2 py-2 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-xl border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={saveActiveWindowAsSegment}
-                      disabled={!signalData || isFullRecordSelected || activeAnalysisWindow.source === 'segment'}
-                      className="rounded-xl bg-accent-secondary/10 border border-accent-secondary/20 px-3 py-2 text-[9px] font-display font-black uppercase tracking-wider text-accent-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      Guardar actual
-                    </button>
-                  </div>
-                  <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-                    {segments.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-border-light dark:border-border-dark bg-gray-50/70 dark:bg-bg-dark/60 p-3 text-[9px] font-mono font-bold text-gray-400 leading-relaxed">
-                        No hay cortes guardados. Ajusta inicio/fin arriba y guarda el corte actual.
-                      </div>
-                    ) : segments.map(segment => (
-                      <div
-                        key={segment.id}
-                        className={`p-3 rounded-2xl border cursor-pointer transition-all ${selectedSegment === segment.id ? 'bg-accent-primary/10 border-accent-primary/40 shadow-sm' : 'bg-gray-50 dark:bg-bg-dark border-border-light dark:border-border-dark hover:border-accent-primary/30'}`}
-                        onClick={() => useSegmentWindow(segment)}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-start gap-2 min-w-0">
-                            <span className="mt-1 w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: segment.color }} />
-                            <div className="min-w-0">
-                              <div className="text-[10px] font-mono font-black text-gray-800 dark:text-gray-100 truncate">{segment.label}</div>
-                              <div className="text-[9px] font-mono font-bold text-gray-400 mt-0.5">
-                                {formatRange(segment.start, segment.end)} · {(segment.end - segment.start).toFixed(3)} s
-                              </div>
-                            </div>
-                          </div>
-                          <button onClick={(e) => { e.stopPropagation(); removeSegment(segment.id); }} className="text-red-500 hover:text-red-400 text-xs font-black">✕</button>
-                        </div>
-                        <div className="mt-2 text-[8px] font-mono font-black uppercase tracking-[0.18em] text-accent-primary">
-                          {selectedSegment === segment.id ? 'Activo' : 'Usar corte'}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
 
                 <section className="premium-card p-4 space-y-3">
                   <div className="flex items-center justify-between gap-3">
@@ -5653,6 +5549,187 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
             </section>
           </div>
         </main>
+
+        {showWindowModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[80] p-4 backdrop-blur-sm">
+            <div className="bg-white dark:bg-bg-dark-panel rounded-[2rem] border border-border-light dark:border-border-dark p-5 lg:p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto custom-scrollbar shadow-2xl">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border-light dark:border-border-dark pb-4">
+                <div>
+                  <h3 className="text-lg lg:text-xl font-display font-black text-gray-900 dark:text-white uppercase tracking-tight flex items-center gap-2">
+                    <Scissors size={20} className="text-accent-primary" />
+                    Corte / ventana
+                  </h3>
+                  <p className="mt-1 text-[9px] font-mono font-bold uppercase tracking-[0.18em] text-gray-400">
+                    Define el rango global antes de Analyze; todas las gráficas usan esta misma ventana.
+                  </p>
+                </div>
+                <span className={`rounded-full px-3 py-1 text-[8px] font-mono font-black uppercase tracking-wider ${
+                  isFullRecordSelected
+                    ? 'bg-accent-primary/15 text-accent-primary'
+                    : activeAnalysisWindow.source === 'segment'
+                      ? 'bg-accent-secondary/15 text-accent-secondary'
+                      : 'bg-unsaac-gold/15 text-unsaac-gold'
+                }`}>
+                  {isFullRecordSelected ? 'Registro completo' : activeAnalysisWindow.source === 'segment' ? 'Corte guardado' : 'Manual'}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_1.15fr]">
+                <section className="rounded-2xl border border-border-light dark:border-border-dark bg-gray-50/70 dark:bg-bg-dark/60 p-3 space-y-3">
+                  <div>
+                    <div className="text-[8px] font-mono font-black uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400">Ventana activa</div>
+                    <div className="mt-1 text-sm font-display font-black text-gray-900 dark:text-white">{activeAnalysisWindow.label}</div>
+                    <div className="mt-1 text-[10px] font-mono font-bold text-gray-500 dark:text-gray-400">
+                      {formatRange(activeAnalysisWindow.start, activeAnalysisWindow.end)} · {activeAnalysisWindow.duration.toFixed(3)} s · {activeAnalysisWindow.samples.toLocaleString()} muestras
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        selectFullRecordWindow();
+                        setShowWindowModal(false);
+                      }}
+                      disabled={!signalData}
+                      className={`rounded-xl border px-3 py-2 text-[9px] font-display font-black uppercase tracking-wider transition-all ${
+                        isFullRecordSelected
+                          ? 'bg-accent-primary text-white border-accent-primary shadow-sm'
+                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-600 dark:text-gray-300 hover:border-accent-primary/40'
+                      } disabled:opacity-40 disabled:cursor-not-allowed`}
+                    >
+                      Todo el registro
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedSegment(null);
+                        setAnalysisResults(null);
+                        setLastAnalysisMeta(null);
+                        setAnalysisStatus('Recorte manual activo. Ajuste inicio/fin y presione Analyze.');
+                      }}
+                      disabled={!signalData}
+                      className={`rounded-xl border px-3 py-2 text-[9px] font-display font-black uppercase tracking-wider transition-all ${
+                        !isFullRecordSelected && activeAnalysisWindow.source === 'manual'
+                          ? 'bg-unsaac-gold/15 border-unsaac-gold/30 text-unsaac-gold'
+                          : 'bg-white/80 dark:bg-bg-dark border-border-light dark:border-border-dark text-gray-600 dark:text-gray-300 hover:border-unsaac-gold/40'
+                      } disabled:opacity-40 disabled:cursor-not-allowed`}
+                    >
+                      Manual
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="premium-card-inner p-2 block">
+                      <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Inicio (s)</span>
+                      <input
+                        type="number"
+                        step="0.001"
+                        value={timeRange[0]}
+                        onChange={(e) => setManualTimeWindow([parseFloat(e.target.value), timeRange[1]])}
+                        className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+                      />
+                    </label>
+                    <label className="premium-card-inner p-2 block">
+                      <span className="text-[8px] font-bold text-gray-500 uppercase tracking-wider font-mono">Fin (s)</span>
+                      <input
+                        type="number"
+                        step="0.001"
+                        value={timeRange[1]}
+                        onChange={(e) => setManualTimeWindow([timeRange[0], parseFloat(e.target.value)])}
+                        className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                    <input
+                      type="text"
+                      placeholder="Nombre opcional del corte"
+                      value={segmentDraft.label}
+                      onChange={(e) => setSegmentDraft(prev => ({ ...prev, label: e.target.value }))}
+                      className="min-w-0 px-3 py-2 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-xl border border-border-light dark:border-border-dark text-gray-900 dark:text-gray-100 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={saveActiveWindowAsSegment}
+                      disabled={!signalData || isFullRecordSelected || activeAnalysisWindow.source === 'segment'}
+                      className="rounded-xl bg-accent-secondary/10 border border-accent-secondary/20 px-3 py-2 text-[9px] font-display font-black uppercase tracking-wider text-accent-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Guardar
+                    </button>
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-border-light dark:border-border-dark bg-white dark:bg-bg-dark-panel p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[8px] font-mono font-black uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400">Cortes guardados</div>
+                      <div className="mt-1 text-[9px] font-mono font-bold text-gray-400">Carga rangos frecuentes sin buscar el panel en el scroll.</div>
+                    </div>
+                    {segments.length > 0 && (
+                      <button
+                        onClick={() => {
+                          setSegments([]);
+                          setSelectedSegment(null);
+                          setAnalysisStatus('Cortes guardados eliminados. Use el recorte manual o todo el registro.');
+                        }}
+                        className="text-[9px] font-mono font-black uppercase tracking-wider text-red-500 hover:text-red-400 shrink-0"
+                      >
+                        Borrar
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="max-h-[44vh] overflow-y-auto custom-scrollbar space-y-2">
+                    {segments.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-border-light dark:border-border-dark bg-gray-50/70 dark:bg-bg-dark/60 p-4 text-[9px] font-mono font-bold text-gray-400 leading-relaxed">
+                        No hay cortes guardados. Ajusta inicio/fin y guarda la ventana actual.
+                      </div>
+                    ) : segments.map(segment => (
+                      <div
+                        key={segment.id}
+                        className={`p-3 rounded-2xl border cursor-pointer transition-all ${selectedSegment === segment.id ? 'bg-accent-primary/10 border-accent-primary/40 shadow-sm' : 'bg-gray-50 dark:bg-bg-dark border-border-light dark:border-border-dark hover:border-accent-primary/30'}`}
+                        onClick={() => {
+                          useSegmentWindow(segment);
+                          setShowWindowModal(false);
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-2 min-w-0">
+                            <span className="mt-1 w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: segment.color }} />
+                            <div className="min-w-0">
+                              <div className="text-[10px] font-mono font-black text-gray-800 dark:text-gray-100 truncate">{segment.label}</div>
+                              <div className="text-[9px] font-mono font-bold text-gray-400 mt-0.5">
+                                {formatRange(segment.start, segment.end)} · {(segment.end - segment.start).toFixed(3)} s
+                              </div>
+                            </div>
+                          </div>
+                          <button onClick={(e) => { e.stopPropagation(); removeSegment(segment.id); }} className="text-red-500 hover:text-red-400 text-xs font-black">✕</button>
+                        </div>
+                        <div className="mt-2 text-[8px] font-mono font-black uppercase tracking-[0.18em] text-accent-primary">
+                          {selectedSegment === segment.id ? 'Activo' : 'Usar corte'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border-light dark:border-border-dark pt-4">
+                <p className="text-[9px] font-mono font-bold uppercase tracking-[0.16em] text-gray-400">
+                  El botón Analyze usará esta ventana activa.
+                </p>
+                <button
+                  onClick={() => setShowWindowModal(false)}
+                  className="px-4 py-2 rounded-xl bg-accent-primary hover:bg-accent-primary/90 text-white font-display font-black uppercase text-xs tracking-wider transition-all active:scale-95"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {showSpectralSummary && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[80] p-4 backdrop-blur-sm">

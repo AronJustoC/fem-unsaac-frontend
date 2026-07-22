@@ -62,15 +62,17 @@ test.describe('Responsive Editor Refactor Verification', () => {
     await page.screenshot({ path: 'test-results/mobile-navbar-menu.png' });
   });
 
-  test('Test 4: Header buttons - "Estático" and "Modal" buttons are present and functional', async ({ page }) => {
+  test('Test 4: Header links - static and modal analysis navigation is present and functional', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('http://localhost:4321');
 
-    const estaticoBtn = page.locator('button:has-text("Estático")');
-    const modalBtn = page.locator('button:has-text("Modal")');
+    const estaticoLink = page.getByRole('link', { name: 'Análisis Estático', exact: true });
+    const modalLink = page.getByRole('link', { name: 'Análisis Modal', exact: true });
 
-    await expect(estaticoBtn).toBeVisible();
-    await expect(modalBtn).toBeVisible();
+    await expect(estaticoLink).toBeVisible();
+    await expect(modalLink).toBeVisible();
+    await expect(estaticoLink).toHaveAttribute('href', '/analisis-estatico');
+    await expect(modalLink).toHaveAttribute('href', '/analisis-modal');
 
     await page.screenshot({ path: 'test-results/header-buttons.png' });
   });

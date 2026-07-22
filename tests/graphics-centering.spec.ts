@@ -84,10 +84,10 @@ test.describe('Graphics Centering Verification', () => {
     
     // Trigger analysis to show the plot
     await page.click('button:has-text("Compute")');
-    await page.waitForSelector('.plotly-graph-div', { timeout: 10000 });
+    await page.waitForSelector('.js-plotly-plot', { timeout: 20000 });
 
     const container = await page.locator('.h-full.w-full.overflow-hidden.flex.font-sans.relative').first().boundingBox();
-    const plot = await page.locator('.plotly-graph-div').boundingBox();
+    const plot = await page.locator('.js-plotly-plot').boundingBox();
     
     expect(container).not.toBeNull();
     expect(plot).not.toBeNull();
@@ -109,10 +109,10 @@ test.describe('Graphics Centering Verification', () => {
     
     // Trigger analysis to show the plot
     await page.click('button:has-text("Solve")');
-    await page.waitForSelector('.plotly-graph-div', { timeout: 10000 });
+    await page.waitForSelector('.js-plotly-plot', { timeout: 20000 });
 
     const container = await page.locator('.h-full.w-full.overflow-hidden.flex.font-sans.relative').first().boundingBox();
-    const plot = await page.locator('.plotly-graph-div').boundingBox();
+    const plot = await page.locator('.js-plotly-plot').boundingBox();
 
     expect(container).not.toBeNull();
     expect(plot).not.toBeNull();
@@ -130,7 +130,7 @@ test.describe('Graphics Centering Verification', () => {
     
     // Trigger visualization to show the plot
     await page.click('button:has-text("Visualizar")');
-    await page.waitForSelector('.plotly-graph-div', { timeout: 10000 });
+    await page.waitForSelector('.js-plotly-plot', { timeout: 20000 });
     
     await page.screenshot({ path: '.sisyphus/evidence/editor-regression-check.png' });
   });

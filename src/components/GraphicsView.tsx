@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Maximize2, Minimize2, Download, Box, RotateCcw } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { getPlotlyTheme } from "../lib/plotly_theme";
@@ -14,6 +14,7 @@ interface GraphicsViewProps {
     fps?: number;
     speedHz?: number;
   };
+  onElementSelect?: (elementId: number) => void;
 }
 
 const GraphicsView: React.FC<GraphicsViewProps> = ({
@@ -22,18 +23,31 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   error,
   className,
   animation,
+  onElementSelect,
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<any>(null);
+  const clickBindingRef = useRef<{ graphDiv: any; handler: (event: any) => void } | null>(null);
   const { theme } = useTheme();
   // Estado para cargar Plotly dinámicamente solo en el cliente
   const [PlotComponent, setPlotComponent] = useState<any>(null);
+  const [plotlyApi, setPlotlyApi] = useState<any>(null);
 
   useEffect(() => {
-    // Importación dinámica para evitar error 'self is not defined' en SSR
-    import("react-plotly.js").then((mod) => {
-      setPlotComponent(() => mod.default);
+    // Importación dinámica para evitar error 'self is not defined' en SSR.
+    // La fábrica y restyle() comparten la MISMA instancia de Plotly. Usar el
+    // componente preempaquetado junto a plotly.js-dist-min duplicaba Plotly y
+    // restyle() reemplazaba los listeners de selección durante la animación.
+    Promise.all([
+      import("react-plotly.js/factory"),
+      import("plotly.js-dist-min"),
+    ]).then(([plotlyFactory, plotlyModule]) => {
+      const nextPlotly = (plotlyModule as any).default ?? plotlyModule;
+      (window as any).Plotly = nextPlotly;
+      setPlotlyApi(nextPlotly);
+      const createPlotlyComponent = (plotlyFactory as any).default ?? plotlyFactory;
+      setPlotComponent(() => createPlotlyComponent(nextPlotly));
     });
   }, []);
 
@@ -65,11 +79,15 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       plot_bgcolor: plotTheme.plotBackground,
       font: { ...(data.layout.font ?? {}), color: plotTheme.mutedText, family: "Inter, Arial, sans-serif" },
       hoverlabel: {
-        bgcolor: plotTheme.hoverBackground,
-        bordercolor: plotTheme.hoverBorder,
-        font: { color: plotTheme.text },
+        ...(data.layout.hoverlabel ?? {}),
+        bgcolor: data.layout.hoverlabel?.bgcolor ?? plotTheme.hoverBackground,
+        bordercolor: data.layout.hoverlabel?.bordercolor ?? plotTheme.hoverBorder,
+        font: {
+          ...(data.layout.hoverlabel?.font ?? {}),
+          color: data.layout.hoverlabel?.font?.color ?? plotTheme.text,
+        },
       },
-      uirevision: `graphics-${theme}`,
+      uirevision: data.layout.uirevision ?? `graphics-${theme}`,
       hovermode: data.layout.hovermode ?? "closest",
     };
 
@@ -111,7 +129,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       // pero react-plotly.js expone el método en el componente subyacente a menudo.
       // Mejor usamos la referencia global que suele inyectar o el método downloadImage de la instancia.
       // Como workaround seguro:
-      const plotlyLib = (window as any).Plotly;
+      const plotlyLib = plotlyApi ?? (window as any).Plotly;
       if (plotlyLib) {
         plotlyLib.downloadImage(plotRef.current.el, {
           format: "png",
@@ -125,7 +143,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
 
   const resetView = () => {
     if (plotRef.current && plotRef.current.el && data?.layout?.scene?.camera) {
-      const plotlyLib = (window as any).Plotly;
+      const plotlyLib = plotlyApi ?? (window as any).Plotly;
       if (plotlyLib) {
         plotlyLib.relayout(plotRef.current.el, {
           "scene.camera": data.layout.scene.camera,
@@ -134,10 +152,39 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     }
   };
 
+  const handlePlotClick = useCallback((event: any) => {
+    if (!onElementSelect) return;
+    const customdata = event?.points?.[0]?.customdata;
+    const rawElementId = Array.isArray(customdata)
+      ? customdata[6]
+      : customdata;
+    const elementId = Number(rawElementId);
+    if (Number.isInteger(elementId) && elementId > 0) {
+      onElementSelect(elementId);
+    }
+  }, [onElementSelect]);
+
+  const bindPlotEvents = useCallback((_figure: any, graphDiv: any) => {
+    const previous = clickBindingRef.current;
+    if (previous) {
+      previous.graphDiv?.removeListener?.("plotly_click", previous.handler);
+      clickBindingRef.current = null;
+    }
+    if (onElementSelect && graphDiv?.on) {
+      graphDiv.on("plotly_click", handlePlotClick);
+      clickBindingRef.current = { graphDiv, handler: handlePlotClick };
+    }
+  }, [handlePlotClick, onElementSelect]);
+
+  useEffect(() => () => {
+    const binding = clickBindingRef.current;
+    binding?.graphDiv?.removeListener?.("plotly_click", binding.handler);
+  }, []);
+
   useEffect(() => {
     if (!animation?.enabled || !data?.data || !PlotComponent) return;
 
-    const plotlyLib = (window as any).Plotly;
+    const plotlyLib = plotlyApi ?? (window as any).Plotly;
     const plotElement = plotRef.current?.el;
     if (!plotlyLib || !plotElement) return;
 
@@ -146,7 +193,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       .filter(({ trace }: any) => (
         trace?.customdata
         && Array.isArray(trace.customdata)
-        && String(trace.mode ?? "").includes("lines")
+        && trace.customdata.some((row: any) => Array.isArray(row) && row.length >= 6)
       ));
 
     if (animatedTraces.length === 0) return;
@@ -158,7 +205,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     const speedHz = animation.speedHz ?? 0.65;
     const startedAt = performance.now();
 
-    const buildScaledCoordinates = (customdata: any[], factor: number) => {
+    const buildScaledCoordinates = (customdata: any[], cosPhase: number, sinPhase: number, scale: number) => {
       const n = customdata.length;
       const x = new Array(n);
       const y = new Array(n);
@@ -170,10 +217,15 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
           x[i] = null;
           y[i] = null;
           z[i] = null;
+        } else if (row.length >= 9) {
+          // Respuesta armónica compleja: Re(U e^{iθ}) = Re(U)cosθ - Im(U)sinθ.
+          x[i] = row[0] + scale * (row[3] * cosPhase - row[6] * sinPhase);
+          y[i] = row[1] + scale * (row[4] * cosPhase - row[7] * sinPhase);
+          z[i] = row[2] + scale * (row[5] * cosPhase - row[8] * sinPhase);
         } else {
-          x[i] = row[0] + row[3] * factor;
-          y[i] = row[1] + row[4] * factor;
-          z[i] = row[2] + row[5] * factor;
+          x[i] = row[0] + row[3] * cosPhase * scale;
+          y[i] = row[1] + row[4] * cosPhase * scale;
+          z[i] = row[2] + row[5] * cosPhase * scale;
         }
       }
 
@@ -184,14 +236,16 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       if (now - lastFrame >= frameMs) {
         lastFrame = now;
         const elapsedSeconds = (now - startedAt) / 1000;
-        const factor = Math.cos(2 * Math.PI * speedHz * elapsedSeconds) * animation.scale;
+        const phase = 2 * Math.PI * speedHz * elapsedSeconds;
+        const cosPhase = Math.cos(phase);
+        const sinPhase = Math.sin(phase);
         const xUpdates: any[] = [];
         const yUpdates: any[] = [];
         const zUpdates: any[] = [];
         const indices: number[] = [];
 
         animatedTraces.forEach(({ trace, index }: any) => {
-          const next = buildScaledCoordinates(trace.customdata, factor);
+          const next = buildScaledCoordinates(trace.customdata, cosPhase, sinPhase, animation.scale);
           xUpdates.push(next.x);
           yUpdates.push(next.y);
           zUpdates.push(next.z);
@@ -212,7 +266,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     return () => {
       cancelAnimationFrame(frameId);
     };
-  }, [animation?.enabled, animation?.fps, animation?.scale, animation?.speedHz, data, PlotComponent]);
+  }, [animation?.enabled, animation?.fps, animation?.scale, animation?.speedHz, data, PlotComponent, plotlyApi]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -307,6 +361,8 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
           data={data.data}
           layout={themeAwareLayout}
           frames={animation?.enabled ? undefined : data.frames}
+          onInitialized={bindPlotEvents}
+          onUpdate={bindPlotEvents}
           useResizeHandler={true}
           style={{ width: "100%", height: isFullscreen ? "100vh" : "100%" }}
           config={{

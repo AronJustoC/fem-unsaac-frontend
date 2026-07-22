@@ -30,6 +30,8 @@ interface Material {
   rho: number;
 }
 
+type SectionShape = "h" | "i" | "rectangular" | "circular";
+
 interface Section {
   id: number;
   name: string;
@@ -37,6 +39,11 @@ interface Section {
   Iz: number;
   Iy: number;
   J: number;
+  visual_shape: SectionShape;
+  visual_height: number;
+  visual_width: number;
+  visual_web_thickness: number;
+  visual_flange_thickness: number;
 }
 
 interface Element {
@@ -44,6 +51,7 @@ interface Element {
   node_ids: [number, number];
   material_id: number;
   section_id: number;
+  visual_rotation_deg?: number;
 }
 
 interface Load {
@@ -72,6 +80,162 @@ interface StructureEditorProps {
 }
 
 const DOFS = ["ux", "uy", "uz", "rx", "ry", "rz"] as const;
+
+const positiveNumber = (value: unknown, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const inferSectionShape = (section: any): SectionShape => {
+  const explicitShape = String(section?.visual_shape ?? section?.shape ?? "").toLowerCase();
+  const name = String(section?.name ?? "").toLowerCase();
+  if (["h", "hea", "heb", "wide_flange"].includes(explicitShape)) return "h";
+  if (["i", "ipe"].includes(explicitShape)) return "i";
+  if (["circle", "circular", "round", "pipe", "tube"].includes(explicitShape)) return "circular";
+  if (["rect", "rectangle", "rectangular", "square"].includes(explicitShape)) return "rectangular";
+  if (/hea|heb|perfil h|viga h|(^|\s)h\s*\d+\s*x/.test(name)) return "h";
+  if (/ipe|perfil i|viga i/.test(name)) return "i";
+  if (/circular|tubo|pipe/.test(name)) return "circular";
+  return "rectangular";
+};
+
+const inferISectionDimensions = (
+  area: number,
+  inertia: number,
+  heightToWidthRatio: number,
+) => {
+  if (inertia <= 0 || heightToWidthRatio <= 0) return null;
+  const widthToHeight = 1 / heightToWidthRatio;
+  const properties = (height: number) => {
+    const width = widthToHeight * height;
+    const thickness = area / (height + 2 * width);
+    if (thickness <= 0 || 2 * thickness >= height || thickness >= width) return null;
+    const webHeight = height - 2 * thickness;
+    const strongInertia =
+      2 *
+        (width * thickness ** 3 / 12 +
+          width * thickness * ((height - thickness) / 2) ** 2) +
+      thickness * webHeight ** 3 / 12;
+    return { strongInertia, width, thickness };
+  };
+
+  const characteristic = Math.max(Math.sqrt(area), 1e-6);
+  let previous: { height: number; delta: number } | null = null;
+  let bracket: [number, number] | null = null;
+  for (let index = 0; index < 240; index += 1) {
+    const factor = index / 239;
+    const height = characteristic * 0.25 * (160 ** factor);
+    const current = properties(height);
+    if (!current) continue;
+    const delta = current.strongInertia - inertia;
+    if (previous && previous.delta * delta <= 0) {
+      bracket = [previous.height, height];
+      break;
+    }
+    previous = { height, delta };
+  }
+  if (!bracket) return null;
+
+  let [low, high] = bracket;
+  for (let index = 0; index < 70; index += 1) {
+    const mid = (low + high) / 2;
+    const current = properties(mid);
+    if (!current || current.strongInertia < inertia) low = mid;
+    else high = mid;
+  }
+  const height = (low + high) / 2;
+  const result = properties(height);
+  return result ? { height, width: result.width, thickness: result.thickness } : null;
+};
+
+const normalizeSection = (section: any): Section => {
+  const shape = inferSectionShape(section);
+  const name = String(section?.name ?? `Sección ${section?.id ?? ""}`).trim();
+  const area = positiveNumber(section?.area ?? section?.A, 0.01);
+  const characteristic = Math.max(Math.sqrt(area), 1e-6);
+  const dimensions = name.match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/i);
+  let inferredHeight: number | null = null;
+  let inferredWidth: number | null = null;
+  let inferredThickness: number | null = null;
+
+  if ((shape === "h" || shape === "i") && dimensions) {
+    const inferred = inferISectionDimensions(
+      area,
+      Math.max(Number(section?.Iy) || 0, Number(section?.Iz) || 0),
+      Number(dimensions[1]) / Number(dimensions[2]),
+    );
+    if (inferred) {
+      inferredHeight = inferred.height;
+      inferredWidth = inferred.width;
+      inferredThickness = inferred.thickness;
+    }
+  } else if (shape === "i") {
+    const designation = name.match(/ipe\s*[- ]?\s*(\d{2,4})/i);
+    if (designation) {
+      inferredHeight = Number(designation[1]) / 1000;
+      inferredWidth = inferredHeight * 0.5;
+    }
+  } else if (shape === "rectangular" && dimensions) {
+    const ratio = Number(dimensions[1]) / Number(dimensions[2]);
+    inferredHeight = Math.sqrt(area * ratio);
+    inferredWidth = Math.sqrt(area / ratio);
+  } else if (shape === "rectangular") {
+    // Rectángulo equivalente para archivos importados sin medidas explícitas:
+    // A = b·h e I = b·h³/12. Conserva área e inercia fuerte visualmente.
+    const strongInertia = Math.max(Number(section?.Iy) || 0, Number(section?.Iz) || 0);
+    if (strongInertia > 0) {
+      const candidateHeight = Math.sqrt((12 * strongInertia) / area);
+      const candidateWidth = area / candidateHeight;
+      if (Number.isFinite(candidateHeight) && Number.isFinite(candidateWidth)) {
+        inferredHeight = Math.max(candidateHeight, candidateWidth);
+        inferredWidth = Math.min(candidateHeight, candidateWidth);
+      }
+    }
+  }
+
+  const visualHeight = positiveNumber(
+    section?.visual_height ?? section?.height,
+    inferredHeight ?? characteristic * (shape === "h" || shape === "i" ? 2 : 1),
+  );
+  const visualWidth = positiveNumber(
+    section?.visual_width ?? section?.width,
+    inferredWidth ?? (shape === "h" || shape === "i" ? visualHeight * 0.5 : characteristic),
+  );
+
+  return {
+    ...section,
+    id: Number(section?.id),
+    name,
+    area,
+    Iz: positiveNumber(section?.Iz, 1e-4),
+    Iy: positiveNumber(section?.Iy, 1e-4),
+    J: positiveNumber(section?.J, 2e-4),
+    visual_shape: shape,
+    visual_height: visualHeight,
+    visual_width: visualWidth,
+    visual_web_thickness: Math.min(
+      positiveNumber(
+        section?.visual_web_thickness ?? section?.web_thickness,
+        inferredThickness ?? visualWidth * 0.08,
+      ),
+      visualWidth * 0.9,
+    ),
+    visual_flange_thickness: Math.min(
+      positiveNumber(
+        section?.visual_flange_thickness ?? section?.flange_thickness,
+        inferredThickness ?? visualHeight * 0.08,
+      ),
+      visualHeight * 0.45,
+    ),
+  };
+};
+
+const sectionShapeLabel: Record<SectionShape, string> = {
+  h: "Perfil H",
+  i: "Perfil I",
+  rectangular: "Rectangular",
+  circular: "Circular",
+};
 
 const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
   const [data, setData] = useState<StructureData>(() => {
@@ -123,7 +287,7 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
           nodes: parsed.nodes || [],
           elements: parsed.elements || [],
           materials: parsed.materials || [],
-          sections: parsed.sections || [],
+          sections: (parsed.sections || []).map(normalizeSection),
           restraints: restraints,
           loads: loads,
         };
@@ -141,14 +305,19 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
       elements: [{ id: 1, node_ids: [1, 2], material_id: 1, section_id: 1 }],
       materials: [{ id: 1, name: "Acero A36", E: 210e9, nu: 0.3, rho: 7850 }],
       sections: [
-        {
+        normalizeSection({
           id: 1,
           name: "Perfil IPE 200",
           area: 0.01,
           Iz: 1e-4,
           Iy: 1e-4,
           J: 2e-4,
-        },
+          visual_shape: "i",
+          visual_height: 0.2,
+          visual_width: 0.1,
+          visual_web_thickness: 0.0056,
+          visual_flange_thickness: 0.0085,
+        }),
       ],
       restraints: {
         1: ["ux", "uy", "uz", "rx", "ry", "rz"],
@@ -281,6 +450,7 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
       node_ids: [data.nodes[0].id, data.nodes[1].id],
       material_id: data.materials[0]?.id || 1,
       section_id: data.sections[0]?.id || 1,
+      visual_rotation_deg: 0,
     };
     setData((prev) => ({ ...prev, elements: [...prev.elements, newEl] }));
     setEditingElement(newEl);
@@ -317,7 +487,7 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
 
   const updateElementProperty = (
     id: number,
-    field: "material_id" | "section_id",
+    field: "material_id" | "section_id" | "visual_rotation_deg",
     value: number,
   ) => {
     setData((prev) => ({
@@ -346,14 +516,19 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
 
   const addSection = () => {
     const nextId = Math.max(0, ...data.sections.map((s) => s.id)) + 1;
-    const newSec: Section = {
+    const newSec: Section = normalizeSection({
       id: nextId,
-      name: `Sección ${nextId} `,
+      name: `Perfil I ${nextId}`,
       area: 0.01,
       Iz: 1e-4,
       Iy: 1e-4,
       J: 2e-4,
-    };
+      visual_shape: "i",
+      visual_height: 0.2,
+      visual_width: 0.1,
+      visual_web_thickness: 0.006,
+      visual_flange_thickness: 0.01,
+    });
     setData((prev) => ({ ...prev, sections: [...prev.sections, newSec] }));
     setEditingSection(newSec);
   };
@@ -517,7 +692,7 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
           nodes: importedData.nodes || [],
           elements: importedData.elements || [],
           materials: importedData.materials || [],
-          sections: importedData.sections || [],
+          sections: (importedData.sections || []).map(normalizeSection),
           restraints: processedRestraints,
           loads: importedData.loads || [],
         };
@@ -563,7 +738,7 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-bg-dark-panel rounded-[2.5rem] border border-unsaac-red/20 dark:border-brand-navy/30 overflow-hidden shadow-2xl transition-all duration-500">
-      <header className="flex items-center justify-between px-8 py-6 border-b border-unsaac-red/20 dark:border-brand-navy/30 bg-gray-50/30 dark:bg-black/20">
+      <header className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-8 sm:py-6 border-b border-unsaac-red/20 dark:border-brand-navy/30 bg-gray-50/30 dark:bg-black/20">
         <div className="flex items-center gap-4">
           <div className="bg-unsaac-red/10 p-2 rounded-xl text-unsaac-red border border-unsaac-red/20">
             <Hash size={20} />
@@ -853,6 +1028,9 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
                         <span className="text-sm font-black text-gray-900 dark:text-white mb-2 truncate max-w-full px-2 font-display">
                           {s.name.toUpperCase()}
                         </span>
+                        <span className="text-[9px] font-mono font-bold text-gray-400 uppercase tracking-wider mb-3">
+                          {sectionShapeLabel[s.visual_shape]} · {Number((s.visual_height * 1000).toFixed(1))} × {Number((s.visual_width * 1000).toFixed(1))} mm
+                        </span>
                         <div className="w-12 h-1 bg-unsaac-gold/30 rounded-full group-hover:w-20 transition-all duration-500"></div>
                       </button>
                       <button
@@ -1135,6 +1313,27 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
                   ))}
                 </select>
               </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                  Giro gráfico de la sección (°)
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  value={editingElement.visual_rotation_deg ?? 0}
+                  onChange={(e) =>
+                    updateElementProperty(
+                      editingElement.id,
+                      "visual_rotation_deg",
+                      parseFloat(e.target.value) || 0,
+                    )
+                  }
+                  className="w-full bg-gray-50 dark:bg-gray-900 border border-unsaac-red/10 dark:border-brand-navy/30 rounded-lg px-3 py-2 text-sm outline-none dark:text-white"
+                />
+                <p className="text-[10px] text-gray-400 leading-relaxed">
+                  0° usa la orientación automática del puente; este giro solo corrige el acabado 3D.
+                </p>
+              </div>
             </div>
 
             <button
@@ -1234,6 +1433,86 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
                 placeholder="Ej. Viga I"
               />
             </div>
+            <div className="grid grid-cols-[1fr_auto] gap-4 items-end">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                  Forma 3D del elemento
+                </label>
+                <select
+                  value={editingSection.visual_shape}
+                  onChange={(e) =>
+                    updateSection(
+                      editingSection.id,
+                      "visual_shape",
+                      e.target.value as SectionShape,
+                    )
+                  }
+                  className="w-full bg-gray-50 dark:bg-gray-900 border border-unsaac-red/10 dark:border-brand-navy/30 rounded-lg px-3 py-2 text-sm outline-none dark:text-white"
+                >
+                  <option value="h">Perfil H</option>
+                  <option value="i">Perfil I</option>
+                  <option value="rectangular">Rectangular</option>
+                  <option value="circular">Circular</option>
+                </select>
+              </div>
+              <div
+                className="w-16 h-16 rounded-xl border border-unsaac-gold/20 bg-unsaac-gold/5 flex items-center justify-center"
+                aria-label={`Vista previa ${sectionShapeLabel[editingSection.visual_shape]}`}
+              >
+                {(editingSection.visual_shape === "h" || editingSection.visual_shape === "i") && (
+                  <div className="w-9 h-11 flex flex-col items-center">
+                    <div className="w-9 h-2 bg-unsaac-gold rounded-sm" />
+                    <div className="w-2 h-7 bg-unsaac-gold" />
+                    <div className="w-9 h-2 bg-unsaac-gold rounded-sm" />
+                  </div>
+                )}
+                {editingSection.visual_shape === "rectangular" && (
+                  <div className="w-9 h-11 border-[5px] border-unsaac-gold rounded-sm" />
+                )}
+                {editingSection.visual_shape === "circular" && (
+                  <div className="w-10 h-10 border-[5px] border-unsaac-gold rounded-full" />
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              {[
+                { label: "Altura gráfica (m)", field: "visual_height", val: editingSection.visual_height },
+                {
+                  label: editingSection.visual_shape === "circular" ? "Diámetro gráfico (m)" : "Ancho gráfico (m)",
+                  field: "visual_width",
+                  val: editingSection.visual_width,
+                },
+                ...(editingSection.visual_shape === "h" || editingSection.visual_shape === "i"
+                  ? [
+                      { label: "Espesor alma gráfico (m)", field: "visual_web_thickness", val: editingSection.visual_web_thickness },
+                      { label: "Espesor ala gráfico (m)", field: "visual_flange_thickness", val: editingSection.visual_flange_thickness },
+                    ]
+                  : []),
+              ].map((item) => (
+                <div key={item.field} className="space-y-1">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                    {item.label}
+                  </label>
+                  <input
+                    type="number"
+                    min="0.0001"
+                    step="0.001"
+                    value={item.val}
+                    onChange={(e) =>
+                      updateSection(
+                        editingSection.id,
+                        item.field as keyof Omit<Section, "id">,
+                        parseFloat(e.target.value),
+                      )
+                    }
+                    className="w-full bg-gray-50 dark:bg-gray-900 border border-unsaac-red/10 dark:border-brand-navy/30 rounded-lg px-3 py-2 text-sm outline-none dark:text-white"
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] leading-relaxed text-emerald-500/80 font-medium">
+              Solo cambia la representación 3D. El área y las inercias usadas por el cálculo FEM no se modifican.
+            </p>
             <div className="grid grid-cols-2 gap-4">
               {[
                 { label: "Área (m²)", field: "area", val: editingSection.area },

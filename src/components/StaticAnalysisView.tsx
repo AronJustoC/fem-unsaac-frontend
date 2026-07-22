@@ -179,7 +179,8 @@ const StaticAnalysisView: React.FC = () => {
             {[
               { id: 'displacements', label: 'Displacements' },
               { id: 'reactions', label: 'Reactions' },
-              { id: 'forces', label: 'Internal Forces' }
+              { id: 'forces', label: 'Internal Forces' },
+              { id: 'stresses', label: 'Stresses' }
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -272,6 +273,30 @@ const StaticAnalysisView: React.FC = () => {
                 </div>
               </div>
             )) : <EmptyState msg="Internal mechanics not calculated." />
+          )}
+
+          {showTables === 'stresses' && (
+            results?.stresses && Object.keys(results.stresses).length > 0 ? Object.entries(results.stresses).map(([elId, sigma]: [string, any]) => (
+              <div key={elId} className="premium-card p-4 group">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-amber-500 rounded-full shadow-[0_0_8px_rgba(245,158,11,0.5)]"></div>
+                    <span className="text-xs font-display font-black text-gray-900 dark:text-white uppercase tracking-widest">Element {elId}</span>
+                  </div>
+                  <ChevronRight size={14} className="text-gray-300 dark:text-gray-600 group-hover:text-amber-500 transition-colors" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {['σ Node 1 (MPa)', 'σ Node 2 (MPa)'].map((label, i) => (
+                    <div key={label} className="premium-card-inner p-2 group-hover:border-amber-500/20 transition-all">
+                      <span className="text-[8px] text-gray-500 font-bold uppercase mb-0.5 block font-mono">{label}</span>
+                      <span className="text-[11px] font-mono font-bold text-gray-900 dark:text-gray-100 truncate block tracking-tighter">
+                        {sigma[i] != null ? (sigma[i] / 1_000_000).toFixed(4) : "0.0000"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )) : <EmptyState msg="Von Mises stresses not calculated." />
           )}
         </div>
       </div>

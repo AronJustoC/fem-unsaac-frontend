@@ -1,6 +1,19 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import GraphicsView from "./GraphicsView";
-import { Play, Loader2, Waves, ChevronRight, Zap } from "lucide-react";
+import GlobalMatrixInspector from "./GlobalMatrixInspector";
+import {
+  Play,
+  Loader2,
+  Waves,
+  ChevronRight,
+  Zap,
+  X,
+  Grid3X3,
+  MousePointer2,
+  Info,
+  CheckCircle2,
+  TableProperties,
+} from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { authenticatedFetch } from "../lib/api";
 
@@ -16,6 +29,9 @@ const hashString = (value: string) => {
 const buildModalCacheKey = (structure: any, numModes: number) =>
   `modal-analysis:${numModes}:${hashString(JSON.stringify(structure))}`;
 
+type MatrixKind = "stiffness" | "mass";
+type MatrixFrame = "local" | "global";
+
 const ModalAnalysisView: React.FC = () => {
   const [structure, setStructure] = useState<any>(null);
   const [results, setResults] = useState<any>(null);
@@ -27,10 +43,19 @@ const ModalAnalysisView: React.FC = () => {
   const [numModes, setNumModes] = useState(12);
   const [selectedMode, setSelectedMode] = useState<number>(0);
   const [animationEnabled, setAnimationEnabled] = useState(true);
+  const [selectedElementId, setSelectedElementId] = useState<number | null>(null);
+  const [elementMatrices, setElementMatrices] = useState<any>(null);
+  const [matrixLoading, setMatrixLoading] = useState(false);
+  const [matrixError, setMatrixError] = useState<string | null>(null);
+  const [matrixKind, setMatrixKind] = useState<MatrixKind>("stiffness");
+  const [matrixFrame, setMatrixFrame] = useState<MatrixFrame>("local");
+  const [globalMatrixOpen, setGlobalMatrixOpen] = useState(false);
   const { theme } = useTheme();
 
   const vizCache = useRef<Map<string, any>>(new Map());
   const modalResultCache = useRef<Map<string, any>>(new Map());
+  const elementMatrixCache = useRef<Map<string, any>>(new Map());
+  const matrixRequestId = useRef(0);
 
   const EmptyState = ({ msg }: { msg: string }) => (
     <div className="text-center py-20 text-gray-500 flex flex-col items-center justify-center bg-black/5 dark:bg-black/40 rounded-3xl border border-dashed border-border-light dark:border-border-dark backdrop-blur-sm">
@@ -72,7 +97,13 @@ const ModalAnalysisView: React.FC = () => {
         setStructure(parsed);
         setResults(null);
         setVizData(null);
+        matrixRequestId.current += 1;
+        setSelectedElementId(null);
+        setElementMatrices(null);
+        setMatrixError(null);
+        setGlobalMatrixOpen(false);
         vizCache.current.clear();
+        elementMatrixCache.current.clear();
       } catch (e) {
         console.error("Error parsing", e);
       }
@@ -132,6 +163,11 @@ const ModalAnalysisView: React.FC = () => {
   const runAnalysis = async () => {
     if (!structure) return;
     setLoading(true);
+    matrixRequestId.current += 1;
+    setSelectedElementId(null);
+    setElementMatrices(null);
+    setMatrixError(null);
+    setGlobalMatrixOpen(false);
     vizCache.current.clear();
     const cacheKey = buildModalCacheKey(structure, numModes);
 
@@ -248,6 +284,108 @@ const ModalAnalysisView: React.FC = () => {
     };
   };
 
+  const selectElement = async (elementId: number) => {
+    if (!structure) return;
+    const requestId = ++matrixRequestId.current;
+    setSelectedElementId(elementId);
+    setMatrixError(null);
+    setElementMatrices(null);
+
+    const cacheKey = `${hashString(JSON.stringify(structure))}:${elementId}`;
+    const cached = elementMatrixCache.current.get(cacheKey);
+    if (cached) {
+      setMatrixLoading(false);
+      setElementMatrices(cached);
+      return;
+    }
+
+    setMatrixLoading(true);
+    try {
+      const response = await authenticatedFetch("/api/analysis/element-matrices", {
+        method: "POST",
+        body: JSON.stringify({ structure, element_id: elementId }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.detail || "No se pudieron recuperar las matrices.");
+      }
+      const payload = await response.json();
+      elementMatrixCache.current.set(cacheKey, payload);
+      if (matrixRequestId.current === requestId) setElementMatrices(payload);
+    } catch (error: any) {
+      if (matrixRequestId.current === requestId) {
+        setMatrixError(error?.message || "No se pudieron recuperar las matrices.");
+      }
+    } finally {
+      if (matrixRequestId.current === requestId) setMatrixLoading(false);
+    }
+  };
+
+  const closeElementInspector = () => {
+    matrixRequestId.current += 1;
+    setSelectedElementId(null);
+    setElementMatrices(null);
+    setMatrixError(null);
+  };
+
+  const displayVizData = useMemo(() => {
+    if (!vizData || !selectedElementId || !structure || !results?.mode_shapes) {
+      return vizData;
+    }
+
+    const element = structure.elements?.find((candidate: any) => candidate.id === selectedElementId);
+    if (!element) return vizData;
+    const nodeMap = new Map(structure.nodes?.map((node: any) => [node.id, node]) ?? []);
+    const selectedNodes = element.node_ids.map((nodeId: number) => nodeMap.get(nodeId));
+    if (selectedNodes.some((node: any) => !node)) return vizData;
+
+    const customdata = selectedNodes.map((node: any) => {
+      const displacement = results.mode_shapes?.[node.id]?.[selectedMode] ?? [0, 0, 0];
+      return [
+        node.coords[0] * 1000,
+        node.coords[1] * 1000,
+        node.coords[2] * 1000,
+        (displacement[0] ?? 0) * 1000,
+        (displacement[1] ?? 0) * 1000,
+        (displacement[2] ?? 0) * 1000,
+        selectedElementId,
+      ];
+    });
+    const selectedTrace = {
+      type: "scatter3d",
+      mode: "lines+markers",
+      x: customdata.map((row: number[]) => row[0] + row[3] * scale),
+      y: customdata.map((row: number[]) => row[1] + row[4] * scale),
+      z: customdata.map((row: number[]) => row[2] + row[5] * scale),
+      customdata,
+      line: { color: "#F59E0B", width: 11 },
+      marker: {
+        color: "#FCD34D",
+        size: 5,
+        line: { color: "#7C2D12", width: 1.5 },
+      },
+      hovertemplate: `<b>Elemento ${selectedElementId}</b><br>Seleccionado para inspección<extra></extra>`,
+      name: `Elemento ${selectedElementId}`,
+      showlegend: false,
+    };
+
+    return { ...vizData, data: [...vizData.data, selectedTrace] };
+  }, [vizData, selectedElementId, structure, results, selectedMode, scale]);
+
+  const activeMatrix = elementMatrices?.matrices?.[matrixKind]?.[matrixFrame] ?? null;
+  const matrixLabels: string[] = elementMatrices?.dof_labels ?? [];
+
+  const formatMatrixValue = (value: number) => {
+    if (!Number.isFinite(value) || Math.abs(value) < 1e-12) return "0";
+    const magnitude = Math.abs(value);
+    if (magnitude >= 1e5 || magnitude < 1e-3) return value.toExponential(2);
+    return Number(value.toPrecision(3)).toString();
+  };
+
+  const matrixUnit = matrixKind === "stiffness"
+    ? "SI · N/m, N y N·m según los GDL"
+    : "SI · kg, kg·m y kg·m² según los GDL";
+
   useEffect(() => {
     if (results && structure) {
       updateVisualization(selectedMode, scale);
@@ -329,7 +467,7 @@ const ModalAnalysisView: React.FC = () => {
             <button
               type="button"
               onClick={() => setAnimationEnabled((prev) => !prev)}
-              className={`premium-card-inner p-1.5 lg:p-4 col-span-2 flex items-center justify-between cursor-pointer transition-all ${
+              className={`premium-card-inner p-1.5 lg:p-4 col-span-2 flex w-full items-center justify-between cursor-pointer transition-all ${
                 animationEnabled
                   ? "border-accent-secondary/40 bg-accent-secondary/10 text-accent-secondary"
                   : "text-gray-500 dark:text-gray-400"
@@ -341,6 +479,21 @@ const ModalAnalysisView: React.FC = () => {
               </span>
               <span className="text-[8px] lg:text-[10px] font-mono font-black uppercase">
                 {animationEnabled ? "Cliente ON" : "Pausa"}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setGlobalMatrixOpen(true)}
+              disabled={!results}
+              className="premium-card-inner col-span-2 flex w-full cursor-pointer items-center justify-between p-1.5 text-cyan-600 transition-all hover:border-cyan-400/40 hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-40 dark:text-cyan-300 lg:p-4"
+            >
+              <span className="flex items-center gap-2 text-[7px] font-bold uppercase tracking-wider font-mono lg:text-[10px]">
+                <TableProperties size={13} />
+                Ensamble global K / M
+              </span>
+              <span className="text-[8px] font-mono font-black uppercase lg:text-[10px]">
+                Ver completa
               </span>
             </button>
           </div>
@@ -398,7 +551,7 @@ const ModalAnalysisView: React.FC = () => {
 
       {/* RIGHT PANEL - 3D Visualization */}
       <div className="relative z-10 flex-1 p-4 lg:p-8 flex flex-col overflow-hidden bg-white dark:bg-bg-dark h-[55vh] lg:h-full">
-        <div className="bg-white/80 dark:bg-bg-dark-panel/90 backdrop-blur-md rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-unsaac-gold/30 group h-full relative">
+        <div className="bg-white/95 dark:bg-bg-dark-panel/95 rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-unsaac-gold/30 group h-full relative">
           {results?.frequencies && (
             <div className="absolute top-6 left-6 z-10 p-4 lg:p-5 premium-card-inner backdrop-blur-xl border-accent-primary/20 shadow-2xl animate-in fade-in slide-in-from-top-4 duration-500">
               <div className="flex items-center gap-3 mb-2 lg:mb-3">
@@ -430,11 +583,18 @@ const ModalAnalysisView: React.FC = () => {
               </div>
             </div>
           )}
+          {results?.frequencies && !selectedElementId && (
+            <div className="absolute top-5 right-5 z-10 pointer-events-none flex items-center gap-2 rounded-xl border border-amber-400/30 bg-white/85 dark:bg-[#101827]/90 px-3 py-2 text-[9px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300 shadow-xl backdrop-blur-xl">
+              <MousePointer2 size={13} />
+              Selecciona una barra · inspecciona K y M
+            </div>
+          )}
           <GraphicsView
-            data={vizData}
+            data={displayVizData}
             loading={loading || vizLoading}
             error={null}
             className="h-full w-full bg-transparent! dark:bg-transparent!"
+            onElementSelect={results ? selectElement : undefined}
             animation={{
               enabled: animationEnabled && Boolean(vizData) && !loading && !vizLoading,
               scale,
@@ -442,8 +602,171 @@ const ModalAnalysisView: React.FC = () => {
               speedHz: 0.65,
             }}
           />
+
+          {selectedElementId && (
+            <section
+              aria-label={`Matrices del elemento ${selectedElementId}`}
+              className="fixed inset-x-2 bottom-2 z-50 flex max-h-[calc(100dvh-1rem)] flex-col overflow-hidden rounded-2xl border border-amber-400/30 bg-white/95 shadow-[0_-20px_60px_rgba(15,23,42,0.22)] backdrop-blur-2xl dark:bg-[#0A101C]/95 sm:absolute sm:left-auto sm:right-4 sm:bottom-4 sm:w-[min(760px,calc(100%-2rem))] sm:max-h-[72%] lg:max-h-[70%] lg:rounded-3xl"
+            >
+              <header className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-200/80 px-4 py-3 dark:border-white/10 lg:px-5 lg:py-4">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400/15 text-amber-600 dark:text-amber-300">
+                    <Grid3X3 size={19} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h3 className="truncate text-sm font-black uppercase tracking-tight text-gray-900 dark:text-white lg:text-base">
+                        Elemento {selectedElementId}
+                      </h3>
+                      {elementMatrices && (
+                        <span className="hidden items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-1 text-[8px] font-black uppercase text-emerald-600 dark:text-emerald-300 sm:flex">
+                          <CheckCircle2 size={10} /> Simétrica
+                        </span>
+                      )}
+                    </div>
+                    <p className="truncate text-[9px] font-mono text-gray-500 dark:text-gray-400">
+                      {elementMatrices
+                        ? `Nodos ${elementMatrices.node_ids.join("–")} · L = ${elementMatrices.length_m.toFixed(4)} m · ${elementMatrices.properties.section_name}`
+                        : "Leyendo sus 12 grados de libertad…"}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeElementInspector}
+                  aria-label="Cerrar inspector de matrices"
+                  className="rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:border-white/10 dark:hover:bg-white/10 dark:hover:text-white"
+                >
+                  <X size={16} />
+                </button>
+              </header>
+
+              <div className="shrink-0 border-b border-gray-200/80 px-4 py-3 dark:border-white/10 lg:px-5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex rounded-xl bg-gray-100 p-1 dark:bg-black/30" role="tablist" aria-label="Tipo de matriz">
+                    {([
+                      ["stiffness", "K · Rigidez"],
+                      ["mass", "M · Masa"],
+                    ] as const).map(([kind, label]) => (
+                      <button
+                        key={kind}
+                        type="button"
+                        role="tab"
+                        aria-selected={matrixKind === kind}
+                        onClick={() => setMatrixKind(kind)}
+                        className={`rounded-lg px-3 py-1.5 text-[9px] font-black uppercase tracking-wide transition ${
+                          matrixKind === kind
+                            ? "bg-white text-amber-700 shadow-sm dark:bg-white/10 dark:text-amber-300"
+                            : "text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex rounded-xl border border-gray-200 p-1 dark:border-white/10" role="tablist" aria-label="Sistema de coordenadas">
+                    {(["local", "global"] as const).map((frame) => (
+                      <button
+                        key={frame}
+                        type="button"
+                        role="tab"
+                        aria-selected={matrixFrame === frame}
+                        onClick={() => setMatrixFrame(frame)}
+                        className={`rounded-lg px-3 py-1.5 text-[9px] font-black uppercase tracking-wide transition ${
+                          matrixFrame === frame
+                            ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
+                            : "text-gray-500"
+                        }`}
+                      >
+                        {frame}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-2 flex items-start gap-2 rounded-xl bg-blue-500/5 px-3 py-2 text-[9px] leading-relaxed text-gray-600 dark:text-gray-300">
+                  <Info size={13} className="mt-0.5 shrink-0 text-blue-500" />
+                  <span>
+                    Filas y columnas siguen <b>[u, v, w, r<sub>x</sub>, r<sub>y</sub>, r<sub>z</sub>]</b> para nodo 1 y nodo 2.
+                    {matrixFrame === "local" ? " El eje x local recorre la barra." : " Esta matriz ya está rotada al sistema XYZ del modelo."}
+                  </span>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-auto px-3 py-3 custom-scrollbar lg:px-5">
+                {matrixLoading && (
+                  <div className="flex min-h-44 flex-col items-center justify-center gap-3 text-gray-400">
+                    <Loader2 size={22} className="animate-spin text-amber-500" />
+                    <span className="text-[9px] font-black uppercase tracking-[0.2em]">Calculando solo este elemento</span>
+                  </div>
+                )}
+                {matrixError && !matrixLoading && (
+                  <div className="rounded-xl border border-red-400/30 bg-red-500/5 p-4 text-xs text-red-600 dark:text-red-300">
+                    {matrixError}
+                  </div>
+                )}
+                {activeMatrix && !matrixLoading && (
+                  <>
+                    <div className="mb-2 flex items-center justify-between gap-2 text-[8px] font-mono uppercase tracking-wide text-gray-500">
+                      <span>{matrixKind === "stiffness" ? "Kₑ" : "Mₑ"}<sup>{matrixFrame === "local" ? "L" : "G"}</sup> · 12 × 12</span>
+                      <span>{matrixUnit}</span>
+                    </div>
+                    <table className="w-max min-w-full border-separate border-spacing-0 font-mono text-[8px] tabular-nums lg:text-[9px]">
+                      <thead>
+                        <tr>
+                          <th className="sticky left-0 top-0 z-30 border-b border-r border-gray-200 bg-gray-100 px-2 py-2 text-gray-400 dark:border-white/10 dark:bg-[#111827]">GDL</th>
+                          {matrixLabels.map((label) => (
+                            <th key={label} className="sticky top-0 z-20 min-w-[70px] border-b border-gray-200 bg-gray-100 px-2 py-2 text-amber-700 dark:border-white/10 dark:bg-[#111827] dark:text-amber-300">
+                              {label}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeMatrix.map((row: number[], rowIndex: number) => (
+                          <tr key={matrixLabels[rowIndex] ?? rowIndex}>
+                            <th className="sticky left-0 z-10 border-b border-r border-gray-200 bg-gray-100 px-2 py-2 text-amber-700 dark:border-white/10 dark:bg-[#111827] dark:text-amber-300">
+                              {matrixLabels[rowIndex]}
+                            </th>
+                            {row.map((value, columnIndex) => (
+                              <td
+                                key={`${rowIndex}-${columnIndex}`}
+                                title={`[${matrixLabels[rowIndex]}, ${matrixLabels[columnIndex]}] = ${value}`}
+                                className={`border-b border-gray-100 px-2 py-2 text-right dark:border-white/5 ${
+                                  Math.abs(value) < 1e-12
+                                    ? "text-gray-300 dark:text-gray-700"
+                                    : value > 0
+                                      ? "text-blue-700 dark:text-blue-300"
+                                      : "text-rose-600 dark:text-rose-300"
+                                } ${rowIndex === columnIndex ? "bg-amber-400/8 font-black" : ""}`}
+                              >
+                                {formatMatrixValue(value)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </div>
+
+              {elementMatrices && (
+                <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-gray-200/80 px-4 py-2 text-[8px] font-mono text-gray-500 dark:border-white/10 lg:px-5">
+                  <span>{elementMatrices.properties.material_name} · mₑ = {elementMatrices.properties.element_mass_kg.toPrecision(4)} kg</span>
+                  <span>Masa {elementMatrices.mass_type === "consistent" ? "consistente" : "concentrada"} · lectura bajo demanda</span>
+                </footer>
+              )}
+            </section>
+          )}
         </div>
       </div>
+
+      {globalMatrixOpen && structure && (
+        <GlobalMatrixInspector
+          structure={structure}
+          onClose={() => setGlobalMatrixOpen(false)}
+        />
+      )}
     </div>
   );
 };

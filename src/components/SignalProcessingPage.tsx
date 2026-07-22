@@ -2375,7 +2375,17 @@ const SignalProcessingContent: React.FC = () => {
   ].join('|'), [fftWindowType, fileName, filterParamFingerprint, preprocessPipelineFingerprint, samplingRate, signalData?.time.length, unit]);
 
   // ============ PLOT LAYOUT ============
-  
+
+  const [isNarrowViewport, setIsNarrowViewport] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 640
+  );
+
+  useEffect(() => {
+    const handleResize = () => setIsNarrowViewport(window.innerWidth < 640);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const getPlotLayout = useCallback((title: string, xaxisTitle: string, yaxisTitle: string) => ({
     title: {
       text: exportConfig.includeTitle ? title : '',
@@ -2407,21 +2417,33 @@ const SignalProcessingContent: React.FC = () => {
       showspikes: false,
     },
     showlegend: chartConfig.showLegend,
-    legend: {
-      bgcolor: plotTheme.legendBackground,
-      bordercolor: plotTheme.legendBorder,
-      borderwidth: 1,
-      font: { color: plotTheme.text, size: 11 },
-    },
+    legend: isNarrowViewport
+      ? {
+          orientation: 'h' as const,
+          x: 0.5,
+          xanchor: 'center' as const,
+          y: -0.35,
+          yanchor: 'top' as const,
+          bgcolor: plotTheme.legendBackground,
+          bordercolor: plotTheme.legendBorder,
+          borderwidth: 1,
+          font: { color: plotTheme.text, size: 10 },
+        }
+      : {
+          bgcolor: plotTheme.legendBackground,
+          bordercolor: plotTheme.legendBorder,
+          borderwidth: 1,
+          font: { color: plotTheme.text, size: 11 },
+        },
     hoverlabel: {
       bgcolor: plotTheme.hoverBackground,
       bordercolor: plotTheme.hoverBorder,
       font: { color: plotTheme.text },
     },
-    margin: { l: 70, r: 50, t: 80, b: 70 },
+    margin: { l: 70, r: isNarrowViewport ? 20 : 50, t: 80, b: isNarrowViewport ? 110 : 70 },
     autosize: true,
     uirevision: `${activeView}-${activeChannel}`,
-  }), [activeChannel, activeView, chartConfig, exportConfig.includeTitle, plotTheme]);
+  }), [activeChannel, activeView, chartConfig, exportConfig.includeTitle, isNarrowViewport, plotTheme]);
 
   // ============ FILE HANDLING ============
   
@@ -4060,7 +4082,12 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
         x: 0.02,
         xanchor: 'left' as const,
       },
-      margin: { l: 74, r: activeView === 'integration' && integrationOutput === 'both' ? 84 : 30, t: 58, b: 58 },
+      margin: {
+        l: 74,
+        r: isNarrowViewport ? 12 : activeView === 'integration' && integrationOutput === 'both' ? 84 : 30,
+        t: 58,
+        b: isNarrowViewport ? 100 : 58,
+      },
       ...extra,
     });
 
@@ -4352,6 +4379,7 @@ ${svg.replace(/<svg[^>]*>|<\/svg>|<[^>]+>/g, '').replace(/fill:/g, 'rgb ')}
     getVibrationBackendResult,
     integrationHighpassHz,
     integrationOutput,
+    isNarrowViewport,
     plotTheme,
     samplingRate,
     signalData,

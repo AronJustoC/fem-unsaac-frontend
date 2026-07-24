@@ -15,6 +15,15 @@ const StaticAnalysisView: React.FC = () => {
   const [scale, setScale] = useState(1.0);
   const [scaleRange, setScaleRange] = useState({ min: 0, max: 100, step: 1 });
   const [showTables, setShowTables] = useState<string>('displacements');
+  const [selectedElementId, setSelectedElementId] = useState<number | null>(null);
+
+  const selectElement = (elementId: number) => {
+    setSelectedElementId(elementId);
+    setShowTables('stresses');
+    requestAnimationFrame(() => {
+      document.getElementById(`element-card-${elementId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  };
 
   const EmptyState = ({ msg }: { msg: string }) => (
     <div className="text-center py-20 text-gray-500 flex flex-col items-center justify-center bg-black/5 dark:bg-black/20 rounded-3xl border border-dashed border-border-light dark:border-border-dark backdrop-blur-sm">
@@ -253,7 +262,11 @@ const StaticAnalysisView: React.FC = () => {
 
           {showTables === 'forces' && (
             results?.element_forces ? Object.entries(results.element_forces).map(([elId, forces]: [string, any]) => (
-              <div key={elId} className="premium-card p-4 group">
+              <div
+                key={elId}
+                id={`element-card-${elId}`}
+                className={`premium-card p-4 group ${String(selectedElementId) === elId ? 'ring-2 ring-accent-danger' : ''}`}
+              >
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 bg-accent-danger rounded-full shadow-[0_0_8px_rgba(239,68,68,0.5)]"></div>
@@ -277,7 +290,11 @@ const StaticAnalysisView: React.FC = () => {
 
           {showTables === 'stresses' && (
             results?.stresses && Object.keys(results.stresses).length > 0 ? Object.entries(results.stresses).map(([elId, sigma]: [string, any]) => (
-              <div key={elId} className="premium-card p-4 group">
+              <div
+                key={elId}
+                id={`element-card-${elId}`}
+                className={`premium-card p-4 group ${String(selectedElementId) === elId ? 'ring-2 ring-amber-500' : ''}`}
+              >
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 bg-amber-500 rounded-full shadow-[0_0_8px_rgba(245,158,11,0.5)]"></div>
@@ -286,11 +303,28 @@ const StaticAnalysisView: React.FC = () => {
                   <ChevronRight size={14} className="text-gray-300 dark:text-gray-600 group-hover:text-amber-500 transition-colors" />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  {['σ Node 1 (MPa)', 'σ Node 2 (MPa)'].map((label, i) => (
+                  {['σ Von Mises N1 (MPa)', 'σ Von Mises N2 (MPa)'].map((label, i) => (
                     <div key={label} className="premium-card-inner p-2 group-hover:border-amber-500/20 transition-all">
                       <span className="text-[8px] text-gray-500 font-bold uppercase mb-0.5 block font-mono">{label}</span>
                       <span className="text-[11px] font-mono font-bold text-gray-900 dark:text-gray-100 truncate block tracking-tighter">
                         {sigma[i] != null ? (sigma[i] / 1_000_000).toFixed(4) : "0.0000"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {/* Circulo de Mohr por extremo: normal/cortante y los dos principales.
+                    Mismo array que Von Mises, indices 2-11 (ver api_adapters.py). */}
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  {[
+                    ['σ normal N1', sigma[2]], ['σ normal N2', sigma[3]],
+                    ['τ corte N1', sigma[4]], ['τ corte N2', sigma[5]],
+                    ['σ1 N1', sigma[6]], ['σ1 N2', sigma[7]],
+                    ['σ2 N1', sigma[8]], ['σ2 N2', sigma[9]],
+                  ].map(([label, value]: any[]) => (
+                    <div key={label} className="premium-card-inner p-2 group-hover:border-amber-500/20 transition-all">
+                      <span className="text-[8px] text-gray-500 font-bold uppercase mb-0.5 block font-mono">{label} (MPa)</span>
+                      <span className="text-[11px] font-mono font-bold text-gray-900 dark:text-gray-100 truncate block tracking-tighter">
+                        {value != null ? (value / 1_000_000).toFixed(4) : "0.0000"}
                       </span>
                     </div>
                   ))}
@@ -304,11 +338,12 @@ const StaticAnalysisView: React.FC = () => {
       {/* RIGHT PANEL - 3D Visualization */}
       <div className="relative z-10 flex-1 p-4 lg:p-8 flex flex-col overflow-hidden bg-white dark:bg-bg-dark h-[55vh] lg:h-full">
         <div className="bg-white/80 dark:bg-bg-dark-panel/90 backdrop-blur-md rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-unsaac-gold/30 group h-full relative">
-          <GraphicsView 
-            data={vizData} 
-            loading={loading} 
-            error={error} 
-            className="h-full w-full bg-transparent! dark:bg-transparent!" 
+          <GraphicsView
+            data={vizData}
+            loading={loading}
+            error={error}
+            className="h-full w-full bg-transparent! dark:bg-transparent!"
+            onElementSelect={results ? selectElement : undefined}
           />
           
           {results && (

@@ -29,8 +29,21 @@ const hashString = (value: string) => {
 const buildModalCacheKey = (structure: any, numModes: number) =>
   `modal-analysis:${numModes}:${hashString(JSON.stringify(structure))}`;
 
-type MatrixKind = "stiffness" | "mass";
+type MatrixKind = "stiffness" | "mass" | "transformation";
 type MatrixFrame = "local" | "global";
+
+const buildTransformationMatrix = (rotation: number[][] | undefined): number[][] | null => {
+  if (!rotation) return null;
+  const T = Array.from({ length: 12 }, () => new Array(12).fill(0));
+  for (let block = 0; block < 4; block++) {
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 3; col++) {
+        T[block * 3 + row][block * 3 + col] = rotation[row][col];
+      }
+    }
+  }
+  return T;
+};
 
 const ModalAnalysisView: React.FC = () => {
   const [structure, setStructure] = useState<any>(null);
@@ -372,7 +385,9 @@ const ModalAnalysisView: React.FC = () => {
     return { ...vizData, data: [...vizData.data, selectedTrace] };
   }, [vizData, selectedElementId, structure, results, selectedMode, scale]);
 
-  const activeMatrix = elementMatrices?.matrices?.[matrixKind]?.[matrixFrame] ?? null;
+  const activeMatrix = matrixKind === "transformation"
+    ? buildTransformationMatrix(elementMatrices?.local_axes)
+    : elementMatrices?.matrices?.[matrixKind]?.[matrixFrame] ?? null;
   const matrixLabels: string[] = elementMatrices?.dof_labels ?? [];
 
   const formatMatrixValue = (value: number) => {
@@ -384,7 +399,9 @@ const ModalAnalysisView: React.FC = () => {
 
   const matrixUnit = matrixKind === "stiffness"
     ? "SI · N/m, N y N·m según los GDL"
-    : "SI · kg, kg·m y kg·m² según los GDL";
+    : matrixKind === "mass"
+      ? "SI · kg, kg·m y kg·m² según los GDL"
+      : "Adimensional · cosenos directores";
 
   useEffect(() => {
     if (results && structure) {
@@ -647,6 +664,7 @@ const ModalAnalysisView: React.FC = () => {
                     {([
                       ["stiffness", "K · Rigidez"],
                       ["mass", "M · Masa"],
+                      ["transformation", "T · Transformación"],
                     ] as const).map(([kind, label]) => (
                       <button
                         key={kind}
@@ -664,30 +682,34 @@ const ModalAnalysisView: React.FC = () => {
                       </button>
                     ))}
                   </div>
-                  <div className="flex rounded-xl border border-gray-200 p-1 dark:border-white/10" role="tablist" aria-label="Sistema de coordenadas">
-                    {(["local", "global"] as const).map((frame) => (
-                      <button
-                        key={frame}
-                        type="button"
-                        role="tab"
-                        aria-selected={matrixFrame === frame}
-                        onClick={() => setMatrixFrame(frame)}
-                        className={`rounded-lg px-3 py-1.5 text-[9px] font-black uppercase tracking-wide transition ${
-                          matrixFrame === frame
-                            ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
-                            : "text-gray-500"
-                        }`}
-                      >
-                        {frame}
-                      </button>
-                    ))}
-                  </div>
+                  {matrixKind !== "transformation" && (
+                    <div className="flex rounded-xl border border-gray-200 p-1 dark:border-white/10" role="tablist" aria-label="Sistema de coordenadas">
+                      {(["local", "global"] as const).map((frame) => (
+                        <button
+                          key={frame}
+                          type="button"
+                          role="tab"
+                          aria-selected={matrixFrame === frame}
+                          onClick={() => setMatrixFrame(frame)}
+                          className={`rounded-lg px-3 py-1.5 text-[9px] font-black uppercase tracking-wide transition ${
+                            matrixFrame === frame
+                              ? "bg-gray-900 text-white dark:bg-white dark:text-gray-900"
+                              : "text-gray-500"
+                          }`}
+                        >
+                          {frame}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="mt-2 flex items-start gap-2 rounded-xl bg-blue-500/5 px-3 py-2 text-[9px] leading-relaxed text-gray-600 dark:text-gray-300">
                   <Info size={13} className="mt-0.5 shrink-0 text-blue-500" />
                   <span>
-                    Filas y columnas siguen <b>[u, v, w, r<sub>x</sub>, r<sub>y</sub>, r<sub>z</sub>]</b> para nodo 1 y nodo 2.
-                    {matrixFrame === "local" ? " El eje x local recorre la barra." : " Esta matriz ya está rotada al sistema XYZ del modelo."}
+                    {matrixKind === "transformation"
+                      ? <>T rota los 12 GDL locales → globales. Es R (3×3, ejes locales del elemento) repetida en 4 bloques diagonales, uno por cada tríada [u,v,w] o [r<sub>x</sub>,r<sub>y</sub>,r<sub>z</sub>] de cada nodo.</>
+                      : <>Filas y columnas siguen <b>[u, v, w, r<sub>x</sub>, r<sub>y</sub>, r<sub>z</sub>]</b> para nodo 1 y nodo 2.
+                        {matrixFrame === "local" ? " El eje x local recorre la barra." : " Esta matriz ya está rotada al sistema XYZ del modelo."}</>}
                   </span>
                 </div>
               </div>
@@ -707,7 +729,11 @@ const ModalAnalysisView: React.FC = () => {
                 {activeMatrix && !matrixLoading && (
                   <>
                     <div className="mb-2 flex items-center justify-between gap-2 text-[8px] font-mono uppercase tracking-wide text-gray-500">
-                      <span>{matrixKind === "stiffness" ? "Kₑ" : "Mₑ"}<sup>{matrixFrame === "local" ? "L" : "G"}</sup> · 12 × 12</span>
+                      <span>
+                        {matrixKind === "transformation"
+                          ? "Tₑ · 12 × 12"
+                          : <>{matrixKind === "stiffness" ? "Kₑ" : "Mₑ"}<sup>{matrixFrame === "local" ? "L" : "G"}</sup> · 12 × 12</>}
+                      </span>
                       <span>{matrixUnit}</span>
                     </div>
                     <table className="w-max min-w-full border-separate border-spacing-0 font-mono text-[8px] tabular-nums lg:text-[9px]">

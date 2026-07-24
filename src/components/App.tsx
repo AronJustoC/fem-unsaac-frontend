@@ -76,12 +76,12 @@ const AppContent: React.FC = () => {
       
       <Navbar />
       
-      <main className="relative z-10 max-w-screen-2xl mx-auto p-4 lg:p-8 animate-in fade-in slide-in-from-bottom-4 duration-1000">
+      <main className="relative z-10 max-w-[1800px] mx-auto p-4 lg:p-8 animate-in fade-in slide-in-from-bottom-4 duration-1000">
         <div className="flex flex-col-reverse lg:grid lg:grid-cols-12 gap-10">
-          <div className="lg:col-span-5 bg-white/80 dark:bg-bg-dark-panel/90 backdrop-blur-md rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl">
+          <div className="lg:col-span-4 bg-white/80 dark:bg-bg-dark-panel/90 backdrop-blur-md rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl">
             <StructureEditor onVisualize={handleVisualize} />
           </div>
-          <div className="lg:col-span-7">
+          <div className="lg:col-span-8">
             <div className="sticky top-28 space-y-6">
               <div className="flex items-center gap-3 mb-2 px-2">
                 <div className="w-1.5 h-6 bg-unsaac-red rounded-full"></div>
@@ -89,7 +89,7 @@ const AppContent: React.FC = () => {
                   Motor de Geometría 3D
                 </h2>
               </div>
-              <div className="bg-white/80 dark:bg-bg-dark-panel/90 backdrop-blur-md rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-unsaac-gold/30 group h-[45vh] lg:h-[600px] relative">
+              <div className="bg-white/80 dark:bg-bg-dark-panel/90 backdrop-blur-md rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-unsaac-gold/30 group h-[70vh] lg:h-[calc(100vh-180px)] relative">
                 <GraphicsView 
                   data={vizData} 
                   loading={loading} 

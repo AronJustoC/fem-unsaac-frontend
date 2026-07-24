@@ -51,6 +51,103 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     });
   }, []);
 
+  // Acumula el encuadre a lo largo de toda la sesion de un mismo grafico (barrido
+  // de frecuencia, animacion, cambio de modo): solo CRECE, nunca se achica. Sin
+  // esto, cada frame recalculaba rango/camara de cero a partir de SU propia
+  // geometria nomas — resultado: los ejes "saltaban" (se re-encuadraban) en cada
+  // paso, y si un frame necesitaba menos rango que el anterior, el siguiente
+  // frame con mas amplitud quedaba recortado contra ese encuadre mas chico.
+  // Se reinicia solo si la estructura de fondo cambia (misma heuristica barata:
+  // firma de tipo+longitud de cada trazo — se mantiene igual entre frecuencias/
+  // frames de animacion, cambia si es una estructura distinta).
+  const sceneAccumRef = useRef<{ signature: string; min: number[]; max: number[] } | null>(null);
+
+  const sceneFraming = useMemo(() => {
+    if (!data?.layout?.scene || !Array.isArray(data?.data)) return null;
+
+    const signature = data.data.map((t: any) => `${t.type}:${t.x?.length ?? 0}`).join("|");
+
+    const minCoords = [Infinity, Infinity, Infinity];
+    const maxCoords = [-Infinity, -Infinity, -Infinity];
+    const grow = (axisIndex: number, value: number) => {
+      if (!Number.isFinite(value)) return;
+      if (value < minCoords[axisIndex]) minCoords[axisIndex] = value;
+      if (value > maxCoords[axisIndex]) maxCoords[axisIndex] = value;
+    };
+
+    data.data.forEach((trace: any) => {
+      (["x", "y", "z"] as const).forEach((axisKey, axisIndex) => {
+        const values = trace?.[axisKey];
+        if (!Array.isArray(values)) return;
+        for (const value of values) grow(axisIndex, Number(value));
+      });
+
+      // La animacion (restyle en cada frame, ver más abajo) mueve estos trazos por
+      // fuera de este cálculo — que corre una sola vez por `data`, no por frame. Sin
+      // esto, el rango queda ajustado a la fase inicial nomás y la oscilación real
+      // (que puede llegar más lejos en otra fase) se recorta contra el borde del eje.
+      // customdata ya trae la amplitud real/imag por eje (misma convención que usa
+      // el loop de animación): la excursión máxima en cualquier fase es hypot(re,im).
+      if (Array.isArray(trace?.customdata)) {
+        for (const row of trace.customdata) {
+          if (!Array.isArray(row) || row[0] === null || row[0] === undefined) continue;
+          const [x, y, z] = row;
+          if (row.length >= 9) {
+            const [, , , dxR, dyR, dzR, dxI, dyI, dzI] = row;
+            grow(0, Number(x) - Math.hypot(dxR, dxI)); grow(0, Number(x) + Math.hypot(dxR, dxI));
+            grow(1, Number(y) - Math.hypot(dyR, dyI)); grow(1, Number(y) + Math.hypot(dyR, dyI));
+            grow(2, Number(z) - Math.hypot(dzR, dzI)); grow(2, Number(z) + Math.hypot(dzR, dzI));
+          } else if (row.length >= 6) {
+            const [, , , dx, dy, dz] = row;
+            grow(0, Number(x) - Math.abs(dx)); grow(0, Number(x) + Math.abs(dx));
+            grow(1, Number(y) - Math.abs(dy)); grow(1, Number(y) + Math.abs(dy));
+            grow(2, Number(z) - Math.abs(dz)); grow(2, Number(z) + Math.abs(dz));
+          }
+        }
+      }
+    });
+    if (!minCoords.every(Number.isFinite)) return null;
+
+    const previous = sceneAccumRef.current;
+    const merged = previous && previous.signature === signature
+      ? {
+        min: minCoords.map((v, i) => Math.min(v, previous.min[i])),
+        max: maxCoords.map((v, i) => Math.max(v, previous.max[i])),
+      }
+      : { min: minCoords, max: maxCoords };
+    sceneAccumRef.current = { signature, min: merged.min, max: merged.max };
+    const [minCoordsAcc, maxCoordsAcc] = [merged.min, merged.max];
+
+    const spans = minCoordsAcc.map((min, i) => Math.max(maxCoordsAcc[i] - min, 1e-6));
+    const globalSpan = Math.max(...spans, 1);
+
+    // Rango por eje con margen propio (no forzado igual entre ejes): una estructura
+    // larga y chata (puente) debe verse larga y chata, no aplastada en un cubo.
+    // Margen chico (8%): solo lo justo para no cortar el sólido/las etiquetas, sin
+    // dejar la estructura chica y perdida en medio de un cuadro casi vacío.
+    const range = minCoordsAcc.map((min, i) => {
+      const span = spans[i];
+      const margin = span > 1e-6 ? span * 0.08 : globalSpan * 0.06;
+      return [min - margin, maxCoordsAcc[i] + margin];
+    });
+
+    // Ojo de camara adaptado a la relacion de aspecto real: ejes cortos retroceden
+    // mas (se ven desde afuera), el eje mas largo se acerca (con aspectmode='data'
+    // ya ocupa toda la escena; alejarse mas solo lo aplasta en diagonal). Misma
+    // formula que el backend usa para Editor/Estatico/Modal (_adaptive_camera_eye
+    // en visualization/plotly_engine.py) — unica logica de camara para todo el front.
+    const maxRangeSpan = Math.max(...spans);
+    const eyeComponent = (span: number) => {
+      const ratio = span / maxRangeSpan;
+      return Math.max(0.7, Math.min(1.9, 1.35 / (ratio + 0.35)));
+    };
+
+    return {
+      range: { x: range[0], y: range[1], z: range[2] },
+      eye: { x: eyeComponent(spans[0]), y: eyeComponent(spans[1]), z: eyeComponent(spans[2]) },
+    };
+  }, [data]);
+
   const themeAwareLayout = useMemo(() => {
     if (!data?.layout) return null;
     const plotTheme = getPlotlyTheme(theme);
@@ -98,17 +195,32 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     });
 
     if (data.layout.scene) {
+      // aspectmode/rango/camara: una sola logica para las 4 vistas (Editor, Estatico,
+      // Modal, Armonico), calculada aca a partir de las coordenadas reales de los
+      // trazos — no de lo que cada backend/builder haya puesto por su cuenta. Evita
+      // que una vista quede "premium" y las demas aplastadas por drift entre
+      // implementaciones separadas.
       nextLayout.scene = {
         ...data.layout.scene,
         bgcolor: data.layout.scene.bgcolor ?? plotTheme.plotBackground,
-        xaxis: withAxisTheme(data.layout.scene?.xaxis),
-        yaxis: withAxisTheme(data.layout.scene?.yaxis),
-        zaxis: withAxisTheme(data.layout.scene?.zaxis),
+        xaxis: withAxisTheme({ ...data.layout.scene?.xaxis, range: sceneFraming?.range.x ?? data.layout.scene?.xaxis?.range }),
+        yaxis: withAxisTheme({ ...data.layout.scene?.yaxis, range: sceneFraming?.range.y ?? data.layout.scene?.yaxis?.range }),
+        zaxis: withAxisTheme({ ...data.layout.scene?.zaxis, range: sceneFraming?.range.z ?? data.layout.scene?.zaxis?.range }),
+        aspectmode: "data",
+        dragmode: "orbit",
+        camera: sceneFraming
+          ? {
+            eye: sceneFraming.eye,
+            up: { x: 0, y: 0, z: 1 },
+            center: { x: 0, y: 0, z: 0 },
+            projection: { type: "perspective" },
+          }
+          : data.layout.scene?.camera,
       };
     }
 
     return nextLayout;
-  }, [data, theme]);
+  }, [data, theme, sceneFraming]);
 
 
   const toggleFullscreen = () => {
@@ -196,7 +308,25 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
         && trace.customdata.some((row: any) => Array.isArray(row) && row.length >= 6)
       ));
 
-    if (animatedTraces.length === 0) return;
+    const meshDeformTraces = data.data
+      .map((trace: any, index: number) => ({ trace, index }))
+      .filter(({ trace }: any) => trace?.type === "mesh3d" && trace?.meta?.rigidMeshDeform);
+
+    if (animatedTraces.length === 0 && meshDeformTraces.length === 0) return;
+
+    // Transición corta desde la posición YA dibujada (p.ej. al cambiar de
+    // frecuencia/modo) hacia la nueva, en vez de saltar de golpe. Se captura ANTES
+    // de que este efecto toque nada — es literalmente lo que Plotly tenía pintado
+    // del render anterior.
+    const TRANSITION_MS = 350;
+    const transitionStartedAt = performance.now();
+    const transitionFrom = new Map<number, { x: any[]; y: any[]; z: any[] }>();
+    [...animatedTraces, ...meshDeformTraces].forEach(({ index }: any) => {
+      const current = plotElement.data?.[index];
+      if (current?.x) {
+        transitionFrom.set(index, { x: [...current.x], y: [...current.y], z: [...current.z] });
+      }
+    });
 
     let frameId = 0;
     let lastFrame = 0;
@@ -204,6 +334,21 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     const frameMs = 1000 / fps;
     const speedHz = animation.speedHz ?? 0.65;
     const startedAt = performance.now();
+
+    // El restyle continuo de la animación reinicia el gesto de mouse (drag/scroll) del
+    // usuario sobre la escena gl3d a mitad de camino. Plotly hace stopPropagation() del
+    // wheel/drag en el canvas gl3d, así que un listener en fase "bubble" nunca lo ve; se
+    // captura en fase "capture" (se dispara antes de que Plotly lo detenga) para pausar el
+    // restyle mientras hay una interacción activa, y se retoma solo al soltar.
+    const INTERACTION_PAUSE_MS = 400;
+    let pausedUntil = 0;
+    const markInteracting = () => { pausedUntil = performance.now() + INTERACTION_PAUSE_MS; };
+    const onPointerMove = (event: PointerEvent) => { if (event.buttons) markInteracting(); };
+    plotElement.addEventListener("wheel", markInteracting, { capture: true, passive: true });
+    plotElement.addEventListener("pointerdown", markInteracting, { capture: true });
+    plotElement.addEventListener("pointermove", onPointerMove, { capture: true });
+    plotElement.on?.("plotly_relayouting", markInteracting);
+    plotElement.on?.("plotly_relayout", markInteracting);
 
     const buildScaledCoordinates = (customdata: any[], cosPhase: number, sinPhase: number, scale: number) => {
       const n = customdata.length;
@@ -232,7 +377,88 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       return { x, y, z };
     };
 
+    // Rotación mínima que lleva el vector unitario fromDir a toDir, aplicada a v (Rodrigues).
+    // Reconstruye la malla sólida deformada solo con la traslación nodal, sin torsión.
+    const rotateVectorToAlign = (
+      v: [number, number, number],
+      fromDir: [number, number, number],
+      toDir: [number, number, number],
+    ): [number, number, number] => {
+      const dot = fromDir[0] * toDir[0] + fromDir[1] * toDir[1] + fromDir[2] * toDir[2];
+      if (dot > 0.999999 || dot < -0.999999) return v;
+      const axis: [number, number, number] = [
+        fromDir[1] * toDir[2] - fromDir[2] * toDir[1],
+        fromDir[2] * toDir[0] - fromDir[0] * toDir[2],
+        fromDir[0] * toDir[1] - fromDir[1] * toDir[0],
+      ];
+      const axisLen = Math.hypot(axis[0], axis[1], axis[2]) || 1;
+      const ux = axis[0] / axisLen, uy = axis[1] / axisLen, uz = axis[2] / axisLen;
+      const s = axisLen;
+      const c = dot;
+      const uCrossV: [number, number, number] = [uy * v[2] - uz * v[1], uz * v[0] - ux * v[2], ux * v[1] - uy * v[0]];
+      const uDotV = ux * v[0] + uy * v[1] + uz * v[2];
+      return [
+        v[0] * c + uCrossV[0] * s + ux * uDotV * (1 - c),
+        v[1] * c + uCrossV[1] * s + uy * uDotV * (1 - c),
+        v[2] * c + uCrossV[2] * s + uz * uDotV * (1 - c),
+      ];
+    };
+
+    const buildDeformedMesh = (trace: any, cosPhase: number, sinPhase: number) => {
+      const rmd = trace.meta.rigidMeshDeform;
+      const scale = rmd.scale ?? 1;
+      const x = trace.x.slice();
+      const y = trace.y.slice();
+      const z = trace.z.slice();
+
+      const dispAt = (nodeId: string): [number, number, number] => {
+        const d = rmd.nodeDisplacement?.[nodeId];
+        if (!d) return [0, 0, 0];
+        return [
+          scale * (d.uxR * cosPhase - d.uxI * sinPhase),
+          scale * (d.uyR * cosPhase - d.uyI * sinPhase),
+          scale * (d.uzR * cosPhase - d.uzI * sinPhase),
+        ];
+      };
+
+      (rmd.groups ?? []).forEach((g: any) => {
+        const d1 = dispAt(g.n1Id);
+        const d2 = dispAt(g.n2Id);
+        const c1p: [number, number, number] = [g.c1_0[0] + d1[0], g.c1_0[1] + d1[1], g.c1_0[2] + d1[2]];
+        const c2p: [number, number, number] = [g.c2_0[0] + d2[0], g.c2_0[1] + d2[1], g.c2_0[2] + d2[2]];
+        const len0 = Math.hypot(g.c2_0[0] - g.c1_0[0], g.c2_0[1] - g.c1_0[1], g.c2_0[2] - g.c1_0[2]) || 1;
+        const localX0: [number, number, number] = [
+          (g.c2_0[0] - g.c1_0[0]) / len0, (g.c2_0[1] - g.c1_0[1]) / len0, (g.c2_0[2] - g.c1_0[2]) / len0,
+        ];
+        const lenp = Math.hypot(c2p[0] - c1p[0], c2p[1] - c1p[1], c2p[2] - c1p[2]) || 1;
+        const localXp: [number, number, number] = [
+          (c2p[0] - c1p[0]) / lenp, (c2p[1] - c1p[1]) / lenp, (c2p[2] - c1p[2]) / lenp,
+        ];
+        for (let k = 0; k < g.count; k++) {
+          const vi = g.start + k;
+          const anchor = g.anchor[k] === 0 ? c1p : c2p;
+          const rotated = rotateVectorToAlign(g.offset[k], localX0, localXp);
+          const nx = anchor[0] + rotated[0];
+          const ny = anchor[1] + rotated[1];
+          const nz = anchor[2] + rotated[2];
+          // Igual que en la posición inicial: ante un valor no finito, se conserva el
+          // vértice previo antes que corromper el trace con NaN.
+          if (Number.isFinite(nx) && Number.isFinite(ny) && Number.isFinite(nz)) {
+            x[vi] = nx;
+            y[vi] = ny;
+            z[vi] = nz;
+          }
+        }
+      });
+
+      return { x, y, z };
+    };
+
     const tick = (now: number) => {
+      if (now < pausedUntil) {
+        frameId = requestAnimationFrame(tick);
+        return;
+      }
       if (now - lastFrame >= frameMs) {
         lastFrame = now;
         const elapsedSeconds = (now - startedAt) / 1000;
@@ -252,6 +478,32 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
           indices.push(index);
         });
 
+        meshDeformTraces.forEach(({ trace, index }: any) => {
+          const next = buildDeformedMesh(trace, cosPhase, sinPhase);
+          xUpdates.push(next.x);
+          yUpdates.push(next.y);
+          zUpdates.push(next.z);
+          indices.push(index);
+        });
+
+        const sinceTransition = now - transitionStartedAt;
+        if (sinceTransition < TRANSITION_MS && transitionFrom.size > 0) {
+          const t = Math.max(0, Math.min(1, sinceTransition / TRANSITION_MS));
+          indices.forEach((traceIndex, i) => {
+            const from = transitionFrom.get(traceIndex);
+            if (!from) return;
+            const blend = (targetArr: any[], fromArr: any[]) =>
+              targetArr.map((v: number | null, j: number) => {
+                const startValue = fromArr[j];
+                if (v === null || startValue == null || !Number.isFinite(startValue)) return v;
+                return startValue * (1 - t) + v * t;
+              });
+            xUpdates[i] = blend(xUpdates[i], from.x);
+            yUpdates[i] = blend(yUpdates[i], from.y);
+            zUpdates[i] = blend(zUpdates[i], from.z);
+          });
+        }
+
         try {
           plotlyLib.restyle(plotElement, { x: xUpdates, y: yUpdates, z: zUpdates }, indices);
         } catch {
@@ -265,6 +517,11 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     frameId = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(frameId);
+      plotElement.removeEventListener("wheel", markInteracting, { capture: true } as any);
+      plotElement.removeEventListener("pointerdown", markInteracting, { capture: true } as any);
+      plotElement.removeEventListener("pointermove", onPointerMove, { capture: true } as any);
+      plotElement.removeListener?.("plotly_relayouting", markInteracting);
+      plotElement.removeListener?.("plotly_relayout", markInteracting);
     };
   }, [animation?.enabled, animation?.fps, animation?.scale, animation?.speedHz, data, PlotComponent, plotlyApi]);
 
@@ -327,6 +584,10 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   return (
     <div
       ref={containerRef}
+      // Sin esto, un arrastre de un dedo sobre el canvas gl3d lo interpreta el navegador
+      // como scroll/pan de la página en touch, y el gesto de orbit de Plotly nunca lo recibe
+      // completo (se corta a medio camino cuando la página se mueve debajo).
+      style={{ touchAction: "none" }}
       className={`relative group bg-white dark:bg-bg-dark transition-all duration-500 ${isFullscreen ? "w-screen h-screen fixed inset-0 z-[100]" : className || "h-[600px] rounded-[2.5rem]"}`}
     >
       <div

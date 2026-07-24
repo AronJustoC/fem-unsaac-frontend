@@ -11,8 +11,36 @@ import {
 } from "lucide-react";
 import { authenticatedFetch } from "../lib/api";
 
-type MatrixKind = "stiffness" | "mass";
+type MatrixKind = "stiffness" | "mass" | "damping";
 type MatrixScope = "full" | "free";
+
+const MATRIX_EXPLANATIONS: Record<MatrixKind, { title: string; formula: string; body: string }> = {
+  stiffness: {
+    title: "K · Matriz de rigidez",
+    formula: "F = K · X",
+    body:
+      "K[i,j] es la fuerza que aparece en el GDL i cuando el GDL j se desplaza una unidad (con todos los demás GDL fijos). " +
+      "Sale de ensamblar, GDL por GDL, la k_local de cada elemento (transformada a globales con T = Rᵀ bloque-diagonal). " +
+      "Es la única matriz que interviene en un análisis estático (F = K·X); en Modal y Armónica es la que domina a bajas frecuencias.",
+  },
+  mass: {
+    title: "M · Matriz de masa",
+    formula: "F_inercial = M · Ẍ",
+    body:
+      "M[i,j] es la fuerza inercial en el GDL i producida por una aceleración unitaria en el GDL j. " +
+      "Con masa concentrada (lumped) queda diagonal — cada nodo aporta su masa/inercia directo a sus propios GDL, sin acoplar nodos vecinos. " +
+      "Junto con K define los modos naturales: Kff·φᵢ = ωᵢ²·Mff·φᵢ.",
+  },
+  damping: {
+    title: "C · Matriz de amortiguamiento",
+    formula: "F_disipativa = C · Ẋ",
+    body:
+      "C[i,j] es la fuerza disipativa (proporcional a la velocidad) en el GDL i por una velocidad unitaria en el GDL j. " +
+      "Acá se usa amortiguamiento de Rayleigh: C = α·M + β·K (con α=0), donde β se calibra para que el primer modo natural " +
+      "tenga la razón de amortiguamiento ζ elegida: β = 2ζ/ω₁, con ω₁ = 2π·f₁. Esta C es exactamente la que entra en la " +
+      "ecuación de la respuesta armónica: Z(Ω) = K − Ω²M + iΩC.",
+  },
+};
 
 interface GlobalMatrixInspectorProps {
   structure: any;
@@ -165,6 +193,7 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
 }) => {
   const [matrixKind, setMatrixKind] = useState<MatrixKind>("stiffness");
   const [matrixScope, setMatrixScope] = useState<MatrixScope>("full");
+  const [dampingRatio, setDampingRatio] = useState(0.02);
   const [rowStart, setRowStart] = useState(0);
   const [colStart, setColStart] = useState(0);
   const [windowSize, setWindowSize] = useState(12);
@@ -192,6 +221,7 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
         structure,
         matrix_kind: matrixKind,
         matrix_scope: matrixScope,
+        damping_ratio: dampingRatio,
         row_start: rowStart,
         col_start: colStart,
         window_size: windowSize,
@@ -216,7 +246,7 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
       });
 
     return () => controller.abort();
-  }, [colStart, matrixKind, matrixScope, rowStart, structure, windowSize]);
+  }, [colStart, dampingRatio, matrixKind, matrixScope, rowStart, structure, windowSize]);
 
   const selectKind = (kind: MatrixKind) => {
     setMatrixKind(kind);
@@ -241,12 +271,17 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
     setColStart(clamp(centerCol - Math.floor(windowSize / 2), 0, maxStart));
   };
 
-  const matrixSymbol = matrixKind === "stiffness" ? "K" : "M";
+  const matrixSymbol = matrixKind === "stiffness" ? "K" : matrixKind === "mass" ? "M" : "C";
   const scopedSymbol = matrixScope === "free" ? `${matrixSymbol}ff` : matrixSymbol;
-  const unit = matrixKind === "stiffness"
-    ? "SI mixto: N/m, N y N·m"
-    : "SI mixto: kg, kg·m y kg·m²";
+  const unit =
+    matrixKind === "stiffness"
+      ? "SI mixto: N/m, N y N·m"
+      : matrixKind === "mass"
+        ? "SI mixto: kg, kg·m y kg·m²"
+        : "SI mixto: N·s/m, N·s y N·m·s";
   const activeWindow = payload?.window;
+  const rayleigh = payload?.matrix?.rayleigh;
+  const explanation = MATRIX_EXPLANATIONS[matrixKind];
 
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/75 p-2 backdrop-blur-md sm:p-4 lg:p-6">
@@ -289,6 +324,7 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
               {([
                 ["stiffness", "K · Rigidez"],
                 ["mass", "M · Masa"],
+                ["damping", "C · Amortiguamiento"],
               ] as const).map(([kind, label]) => (
                 <button
                   key={kind}
@@ -327,6 +363,21 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
                 </button>
               ))}
             </div>
+            {matrixKind === "damping" && (
+              <label className="flex items-center gap-1.5 rounded-xl border border-gray-200 px-2.5 py-1.5 text-[8px] font-black uppercase tracking-wider text-gray-400 dark:border-white/10">
+                ζ objetivo (modo 1)
+                <input
+                  aria-label="Razón de amortiguamiento objetivo"
+                  type="number"
+                  min={0}
+                  max={0.5}
+                  step={0.005}
+                  value={dampingRatio}
+                  onChange={(event) => setDampingRatio(clamp(Number(event.target.value) || 0, 0, 0.5))}
+                  className="ml-1 w-16 rounded-lg border border-gray-200 bg-white px-2 py-1 font-mono text-[9px] text-gray-900 dark:border-white/10 dark:bg-black/20 dark:text-white"
+                />
+              </label>
+            )}
           </div>
         </div>
 
@@ -345,6 +396,22 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
 
         {payload && (
           <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
+            <div className="mx-4 mt-3 flex items-start gap-2 rounded-2xl border border-cyan-400/15 bg-cyan-500/5 p-3 text-[9px] leading-relaxed text-gray-600 dark:text-gray-300 sm:mx-6">
+              <Info size={13} className="mt-0.5 shrink-0 text-cyan-500" />
+              <span>
+                <strong className="font-black text-gray-800 dark:text-gray-100">{explanation.title}</strong>
+                {" — "}
+                <span className="font-mono font-bold text-cyan-700 dark:text-cyan-300">{explanation.formula}</span>
+                {". "}
+                {explanation.body}
+                {matrixKind === "damping" && rayleigh && (
+                  <>
+                    {" "}Con ζ = {rayleigh.damping_ratio} y f₁ = {rayleigh.first_natural_frequency_hz != null ? `${rayleigh.first_natural_frequency_hz.toFixed(3)} Hz` : "—"}, esta ventana usa
+                    α = {rayleigh.rayleigh_alpha} y β = {formatCompact(rayleigh.rayleigh_beta)}.
+                  </>
+                )}
+              </span>
+            </div>
             <div className="grid grid-cols-2 gap-2 px-4 py-3 sm:grid-cols-4 sm:px-6">
               {[
                 ["Dimensión", `${payload.matrix.dimension} × ${payload.matrix.dimension}`],
@@ -504,16 +571,22 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
               <div className="flex items-start gap-2 text-[9px] text-gray-600 dark:text-gray-300">
                 <Info size={14} className="mt-0.5 shrink-0 text-amber-500" />
                 <span>
-                  {matrixScope === "full"
-                    ? `${matrixSymbol} = Σ Aₑᵀ ${matrixSymbol}ₑᴳ Aₑ · matriz ensamblada antes de eliminar los apoyos.`
-                    : "Kff φᵢ = ωᵢ² Mff φᵢ · estas son las matrices reducidas que entran al solucionador modal."}
+                  {matrixKind === "damping"
+                    ? `C = α·M + β·K · no se ensambla elemento por elemento como K o M, se calcula directo de K${matrixScope === "free" ? "ff" : ""} y M${matrixScope === "free" ? "ff" : ""} ya ensambladas.`
+                    : matrixScope === "full"
+                      ? `${matrixSymbol} = Σ Aₑᵀ ${matrixSymbol}ₑᴳ Aₑ · matriz ensamblada antes de eliminar los apoyos.`
+                      : "Kff φᵢ = ωᵢ² Mff φᵢ · estas son las matrices reducidas que entran al solucionador modal."}
                   {matrixKind === "mass" && matrixScope === "free" && payload.metadata.mass_regularized
                     ? ` Mff incluye ${payload.metadata.regularization_value.toExponential(1)} en su diagonal, igual que el solver.`
                     : ""}
                 </span>
               </div>
               <span className="shrink-0 font-mono text-[10px] font-black text-amber-700 dark:text-amber-300">
-                {matrixScope === "free" ? "det(Kff − ω²Mff) = 0" : `${matrixSymbol}[Gₑ,Gₑ] += ${matrixSymbol}ₑᴳ`}
+                {matrixKind === "damping"
+                  ? "Z(Ω) = K − Ω²M + iΩC"
+                  : matrixScope === "free"
+                    ? "det(Kff − ω²Mff) = 0"
+                    : `${matrixSymbol}[Gₑ,Gₑ] += ${matrixSymbol}ₑᴳ`}
               </span>
             </div>
           </div>

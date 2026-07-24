@@ -13,10 +13,12 @@ import {
   Play,
   SlidersHorizontal,
   Waves,
+  Workflow,
 } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { authenticatedFetch } from "../lib/api";
 import { getPlotlyTheme } from "../lib/plotly_theme";
+import GlobalMatrixInspector from "./GlobalMatrixInspector";
 
 const hashString = (value: string) => {
   let hash = 2166136261;
@@ -490,6 +492,7 @@ const HarmonicAnalysisView: React.FC = () => {
   const [nodeTableOpen, setNodeTableOpen] = useState(false);
   const [selectedElementId, setSelectedElementId] = useState<number | null>(null);
   const [bdMatrixOpen, setBdMatrixOpen] = useState(false);
+  const [globalMatrixOpen, setGlobalMatrixOpen] = useState(false);
   const { theme } = useTheme();
 
   const availableNodeIds = useMemo(() => getAvailableNodeIds(structure), [structure]);
@@ -948,6 +951,17 @@ const HarmonicAnalysisView: React.FC = () => {
                 />
                 <button
                   type="button"
+                  onClick={() => setGlobalMatrixOpen(true)}
+                  className="mt-2 flex w-full cursor-pointer items-center justify-between gap-2 rounded-xl border border-sky-400/20 bg-sky-500/5 px-3 py-2 text-sky-700 transition-all hover:bg-sky-500/10 dark:text-sky-300"
+                >
+                  <span className="flex items-center gap-2 text-[8px] lg:text-[9px] font-bold uppercase tracking-wider font-mono">
+                    <Workflow size={12} />
+                    Matrices K, M y C globales
+                  </span>
+                  <span className="text-[8px] font-mono font-black uppercase">Ver</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setImpedanceMatrixOpen(true)}
                   className="mt-2 flex w-full cursor-pointer items-center justify-between gap-2 rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/5 px-3 py-2 text-fuchsia-700 transition-all hover:bg-fuchsia-500/10 dark:text-fuchsia-300"
                 >
@@ -1200,6 +1214,10 @@ const HarmonicAnalysisView: React.FC = () => {
           />
         </div>
       </div>
+
+      {globalMatrixOpen && structure && (
+        <GlobalMatrixInspector structure={structure} onClose={() => setGlobalMatrixOpen(false)} />
+      )}
 
       {impedanceMatrixOpen && structure && (
         <ImpedanceMatrixInspector

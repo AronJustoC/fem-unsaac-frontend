@@ -1,6 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import GraphicsView from "./GraphicsView";
 import ImpedanceMatrixInspector from "./ImpedanceMatrixInspector";
+import NodeResponseTable from "./NodeResponseTable";
+import BDMatrixInspector from "./BDMatrixInspector";
 import {
   Activity,
   AlertTriangle,
@@ -16,6 +18,15 @@ import { useTheme } from "./ThemeContext";
 import { authenticatedFetch } from "../lib/api";
 import { getPlotlyTheme } from "../lib/plotly_theme";
 
+const hashString = (value: string) => {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
 type MetricKey = "displacement_m" | "velocity_m_s" | "acceleration_m_s2" | "stress_pa";
 
 type HarmonicNodeSeries = Partial<Record<MetricKey, number[]>>;
@@ -24,12 +35,16 @@ type HarmonicNodeSummary = Partial<Record<MetricKey | "frequency_hz" | "stress_p
 
 type HarmonicNodeComponents = Partial<Record<"ux_real_m" | "ux_imag_m" | "uy_real_m" | "uy_imag_m" | "uz_real_m" | "uz_imag_m", number[]>>;
 
+type ElementMetricKey = `${MetricKey}_i` | `${MetricKey}_j`;
+type HarmonicElementSeries = Partial<Record<ElementMetricKey, number[]>>;
+
 type HarmonicResults = {
   frequencies_sweep: number[];
   response_amplitudes: Record<string, number[]>;
   node_response_series?: Record<string, HarmonicNodeSeries>;
   node_displacement_components?: Record<string, HarmonicNodeComponents>;
   node_peak_summary?: Record<string, HarmonicNodeSummary>;
+  element_response_series?: Record<string, HarmonicElementSeries>;
   peak_node_id?: number | null;
   peak_frequency?: number | null;
   peak_amplitude?: number | null;
@@ -100,6 +115,9 @@ const getMetricSeries = (results: HarmonicResults, nodeId: string, metric: Metri
   if (metric === "displacement_m") return results.response_amplitudes?.[nodeId] ?? [];
   return [];
 };
+
+const getElementMetricSeries = (results: HarmonicResults, elementId: string, end: "i" | "j", metric: MetricKey): number[] =>
+  results.element_response_series?.[elementId]?.[`${metric}_${end}` as ElementMetricKey] ?? [];
 
 const mapDofToBackend = (dof: string): string => {
   const mapping: Record<string, string> = {
@@ -274,290 +292,181 @@ const buildFrequencyChart = (
 };
 
 
-const buildHarmonicMotionView = (
-  structure: any,
-  results: HarmonicResults,
-  frequencyIndex: number,
-  theme: string,
-  activeMetric: MetricKey,
-  visualScale: number,
-) => {
-  const plotTheme = getPlotlyTheme(theme === "dark" ? "dark" : "light");
-  const metric = metricConfig(activeMetric);
-  const nodes = Array.isArray(structure?.nodes) ? structure.nodes : [];
-  const elements = Array.isArray(structure?.elements) ? structure.elements : [];
-  const nodeById = new Map(nodes.map((node: any) => [String(node.id), node]));
-  const coords = nodes.map((node: any) => node.coords ?? [0, 0, 0]);
-  const xs = coords.map((coord: number[]) => Number(coord[0]) || 0);
-  const ys = coords.map((coord: number[]) => Number(coord[1]) || 0);
-  const zs = coords.map((coord: number[]) => Number(coord[2]) || 0);
-  const getExtent = (values: number[]) => {
-    const finite = values.filter(Number.isFinite);
-    if (finite.length === 0) return { min: -0.5, max: 0.5, span: 1 };
-    const min = Math.min(...finite);
-    const max = Math.max(...finite);
-    return { min, max, span: Math.max(max - min, 1e-6) };
-  };
-  const ex = getExtent(xs);
-  const ey = getExtent(ys);
-  const ez = getExtent(zs);
-  const baseSpan = Math.max(ex.span, ey.span, ez.span, 1);
-
-  const nodeKinematics = new Map<string, {
-    uxR: number; uyR: number; uzR: number;
-    uxI: number; uyI: number; uzI: number;
-    u: number; v: number; a: number; stress: number;
-    metricValue: number;
-  }>();
-
-  let maxComponent = 0;
-  nodes.forEach((node: any) => {
-    const nodeId = String(node.id);
-    const comp = results.node_displacement_components?.[nodeId] ?? {};
-    const uxR = Number(comp.ux_real_m?.[frequencyIndex] ?? 0);
-    const uyR = Number(comp.uy_real_m?.[frequencyIndex] ?? 0);
-    const uzR = Number(comp.uz_real_m?.[frequencyIndex] ?? 0);
-    const uxI = Number(comp.ux_imag_m?.[frequencyIndex] ?? 0);
-    const uyI = Number(comp.uy_imag_m?.[frequencyIndex] ?? 0);
-    const uzI = Number(comp.uz_imag_m?.[frequencyIndex] ?? 0);
-    const u = Number(getMetricSeries(results, nodeId, "displacement_m")?.[frequencyIndex] ?? 0);
-    const v = Number(getMetricSeries(results, nodeId, "velocity_m_s")?.[frequencyIndex] ?? 0);
-    const a = Number(getMetricSeries(results, nodeId, "acceleration_m_s2")?.[frequencyIndex] ?? 0);
-    const stress = Number(getMetricSeries(results, nodeId, "stress_pa")?.[frequencyIndex] ?? 0);
-    const metricRaw = activeMetric === "displacement_m" ? u
-      : activeMetric === "velocity_m_s" ? v
-        : activeMetric === "acceleration_m_s2" ? a
-          : stress;
-    maxComponent = Math.max(
-      maxComponent,
-      Math.hypot(
-        Math.hypot(uxR, uxI),
-        Math.hypot(uyR, uyI),
-        Math.hypot(uzR, uzI),
-      ),
-    );
-    nodeKinematics.set(nodeId, {
-      uxR, uyR, uzR, uxI, uyI, uzI,
-      u, v, a, stress,
-      metricValue: metricDisplayValue(metricRaw, activeMetric),
-    });
-  });
-
-  // 14% del vano principal: suficiente para apreciar vibración sin destruir la geometría.
-  const autoScale = maxComponent > 0 ? Math.min(Math.max((baseSpan * 0.14) / maxComponent, 1), 20_000) : 1;
-  const safeVisualScale = Number.isFinite(visualScale) ? Math.min(Math.max(visualScale, 0.05), 8) : 1;
-  const deformationScale = autoScale * safeVisualScale;
-
-  const lineX: any[] = [];
-  const lineY: any[] = [];
-  const lineZ: any[] = [];
-  const customdata: any[] = [];
-  const undeformedX: any[] = [];
-  const undeformedY: any[] = [];
-  const undeformedZ: any[] = [];
-  const markerX: number[] = [];
-  const markerY: number[] = [];
-  const markerZ: number[] = [];
-  const markerColor: number[] = [];
-  const markerText: string[] = [];
-  const markerCustomdata: any[] = [];
-  const rangeX: number[] = [];
-  const rangeY: number[] = [];
-  const rangeZ: number[] = [];
-
-  const pushRangeEnvelope = (x: number, y: number, z: number, k: ReturnType<typeof nodeKinematics.get>) => {
-    const ampX = k ? deformationScale * Math.hypot(k.uxR, k.uxI) : 0;
-    const ampY = k ? deformationScale * Math.hypot(k.uyR, k.uyI) : 0;
-    const ampZ = k ? deformationScale * Math.hypot(k.uzR, k.uzI) : 0;
-    rangeX.push(x - ampX, x + ampX);
-    rangeY.push(y - ampY, y + ampY);
-    rangeZ.push(z - ampZ, z + ampZ);
-  };
-
-  const makeAnimationRow = (x: number, y: number, z: number, k: NonNullable<ReturnType<typeof nodeKinematics.get>>, nodeId: string) => ([
-    x, y, z,
-    deformationScale * k.uxR, deformationScale * k.uyR, deformationScale * k.uzR,
-    deformationScale * k.uxI, deformationScale * k.uyI, deformationScale * k.uzI,
-    nodeId,
-    metricDisplayValue(k.u, "displacement_m"),
-    metricDisplayValue(k.v, "velocity_m_s"),
-    k.a,
-    k.a / 9.80665,
-    metricDisplayValue(k.stress, "stress_pa"),
-  ]);
-
-  const pushPoint = (node: any, forLine = true) => {
-    const nodeId = String(node.id);
-    const [rawX, rawY, rawZ] = node.coords ?? [0, 0, 0];
-    const x = Number(rawX) || 0;
-    const y = Number(rawY) || 0;
-    const z = Number(rawZ) || 0;
-    const k = nodeKinematics.get(nodeId) ?? {
-      uxR: 0, uyR: 0, uzR: 0, uxI: 0, uyI: 0, uzI: 0,
-      u: 0, v: 0, a: 0, stress: 0, metricValue: 0,
-    };
-    const row = makeAnimationRow(x, y, z, k, nodeId);
-    const dx = deformationScale * k.uxR;
-    const dy = deformationScale * k.uyR;
-    const dz = deformationScale * k.uzR;
-
-    if (forLine) {
-      lineX.push(x + dx);
-      lineY.push(y + dy);
-      lineZ.push(z + dz);
-      customdata.push(row);
-      undeformedX.push(x);
-      undeformedY.push(y);
-      undeformedZ.push(z);
-      return;
-    }
-
-    markerX.push(x + dx);
-    markerY.push(y + dy);
-    markerZ.push(z + dz);
-    markerColor.push(k.metricValue);
-    markerText.push(`N${nodeId}`);
-    markerCustomdata.push(row);
-    pushRangeEnvelope(x, y, z, k);
-  };
-
-  nodes.forEach((node: any) => pushPoint(node, false));
-
-  elements.forEach((element: any) => {
-    const n1 = nodeById.get(String(element.node_ids?.[0]));
-    const n2 = nodeById.get(String(element.node_ids?.[1]));
-    if (!n1 || !n2) return;
-    pushPoint(n1, true);
-    pushPoint(n2, true);
-    lineX.push(null); lineY.push(null); lineZ.push(null); customdata.push([null]);
-    undeformedX.push(null); undeformedY.push(null); undeformedZ.push(null);
-  });
-
-  const makeCenteredRanges = () => {
-    const finiteX = rangeX.filter(Number.isFinite);
-    const finiteY = rangeY.filter(Number.isFinite);
-    const finiteZ = rangeZ.filter(Number.isFinite);
-    const minX = finiteX.length ? Math.min(...finiteX) : ex.min;
-    const maxX = finiteX.length ? Math.max(...finiteX) : ex.max;
-    const minY = finiteY.length ? Math.min(...finiteY) : ey.min;
-    const maxY = finiteY.length ? Math.max(...finiteY) : ey.max;
-    const minZ = finiteZ.length ? Math.min(...finiteZ) : ez.min;
-    const maxZ = finiteZ.length ? Math.max(...finiteZ) : ez.max;
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const cz = (minZ + maxZ) / 2;
-    const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ, baseSpan * 0.15, 1e-6);
-    const half = span * 0.64;
-    return {
-      x: [cx - half, cx + half],
-      y: [cy - half, cy + half],
-      z: [cz - half, cz + half],
-    };
-  };
-
-  const ranges = makeCenteredRanges();
-  const selectedFrequency = results.frequencies_sweep?.[frequencyIndex] ?? 0;
-  const hoverTemplate =
-    "<b>Respuesta armónica · Nodo %{customdata[9]}</b><br>" +
-    "<span style='color:#64748b'>Frecuencia:</span> " + selectedFrequency.toFixed(3) + " Hz<br>" +
-    "<span style='color:#64748b'>Desplazamiento |u|:</span> %{customdata[10]:.3e} mm<br>" +
-    "<span style='color:#64748b'>Velocidad |v|:</span> %{customdata[11]:.3e} mm/s<br>" +
-    "<span style='color:#64748b'>Aceleración |a|:</span> %{customdata[12]:.3e} m/s² (%{customdata[13]:.2f} g)<br>" +
-    "<span style='color:#64748b'>Esfuerzo alternante σa:</span> %{customdata[14]:.2f} MPa<br>" +
-    "<span style='color:#10B981'>Color activo:</span> " + metric.axis +
-    "<extra></extra>";
-
+const applyClientScaling = (vizData: any, scale: number) => {
+  if (!vizData?.data) return vizData;
   return {
-    data: [
-      {
-        type: "scatter3d",
-        mode: "lines",
-        x: undeformedX,
-        y: undeformedY,
-        z: undeformedZ,
-        name: "Original",
-        line: { color: "rgba(100,116,139,0.35)", width: 3, dash: "dot" },
-        hoverinfo: "skip",
-      },
-      {
-        type: "scatter3d",
-        mode: "lines",
-        x: lineX,
-        y: lineY,
-        z: lineZ,
-        customdata,
-        name: "Deformada animada",
-        line: { color: "#10B981", width: 6 },
-        hoverinfo: "skip",
-      },
-      {
-        type: "scatter3d",
-        mode: "markers",
-        x: markerX,
-        y: markerY,
-        z: markerZ,
-        customdata: markerCustomdata,
-        text: markerText,
-        name: metric.label,
-        marker: {
-          size: 5.5,
-          color: markerColor,
-          colorscale: "Turbo",
-          showscale: true,
-          colorbar: {
-            title: { text: `${metric.label} (${metric.unit})`, side: "right", font: { size: 10, color: plotTheme.text } },
-            thickness: 14,
-            len: 0.56,
-            x: 0.93,
-            y: 0.46,
-            outlinewidth: 0,
-            tickfont: { size: 9, color: plotTheme.subtleText },
-          },
-          line: { color: "rgba(15,23,42,0.35)", width: 0.8 },
-        },
-        hovertemplate: hoverTemplate,
-      },
-    ],
-    layout: {
-      autosize: true,
-      margin: { l: 8, r: 96, t: 86, b: 8 },
-      title: {
-        text: `Movimiento armónico · ${selectedFrequency.toFixed(3)} Hz · ${metric.axis} · escala visual ${safeVisualScale.toFixed(2)}×`,
-        x: 0.5,
-        y: 0.98,
-        xanchor: "center",
-        yanchor: "top",
-        font: { color: plotTheme.text, size: 14 },
-      },
-      hoverlabel: {
-        bgcolor: theme === "dark" ? "#0F172A" : "#FFFFFF",
-        bordercolor: "#10B981",
-        font: { color: plotTheme.text, family: "Inter, Arial, sans-serif", size: 12 },
-        align: "left",
-      },
-      showlegend: true,
-      legend: { x: 0.02, y: 0.88, bgcolor: plotTheme.legendBackground, font: { color: plotTheme.text, size: 10 } },
-      scene: {
-        domain: { x: [0.03, 0.86], y: [0.05, 0.94] },
-        aspectmode: "cube",
-        bgcolor: plotTheme.plotBackground,
-        xaxis: { title: "X (m)", range: ranges.x, gridcolor: plotTheme.grid, zerolinecolor: plotTheme.zeroLine, showbackground: false },
-        yaxis: { title: "Y (m)", range: ranges.y, gridcolor: plotTheme.grid, zerolinecolor: plotTheme.zeroLine, showbackground: false },
-        zaxis: { title: "Z (m)", range: ranges.z, gridcolor: plotTheme.grid, zerolinecolor: plotTheme.zeroLine, showbackground: false },
-        camera: {
-          eye: { x: 1.35, y: -1.65, z: 0.95 },
-          center: { x: 0, y: 0, z: 0 },
-          projection: { type: "orthographic" },
-        },
-      },
-      hovermode: "closest",
-      uirevision: `harmonic-motion-${theme}-${frequencyIndex}-${activeMetric}-${safeVisualScale}`,
-    },
+    ...vizData,
+    frames: undefined,
+    data: vizData.data.map((trace: any) => {
+      if (!trace.customdata || !String(trace.mode ?? "").includes("lines")) return trace;
+      const n = trace.customdata.length;
+      const newX = new Array(n);
+      const newY = new Array(n);
+      const newZ = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const row = trace.customdata[i];
+        if (!row || row[0] === null) {
+          newX[i] = null; newY[i] = null; newZ[i] = null;
+        } else {
+          newX[i] = row[0] + row[3] * scale;
+          newY[i] = row[1] + row[4] * scale;
+          newZ[i] = row[2] + row[5] * scale;
+        }
+      }
+      return { ...trace, x: newX, y: newY, z: newZ };
+    }),
   };
+};
+
+// El motor gráfico que reusamos de Estático/Modal colorea SIEMPRE por magnitud de
+// desplazamiento (así construyó su colorbar "Deformación (mm)"), no tiene noción
+// de Vel/Acel/Esfuerzo, y el trazo "Nodos" es un color plano fijo (ni siquiera en
+// desplazamiento). Acá se recolorea con los valores reales:
+// - Líneas "Deformada N": por elemento (element_response_series, extremos i/j —
+//   anclados a los nodos), interpolando a lo largo de cada segmento (misma
+//   agrupación que ya usa el backend: una tanda de puntos por elemento, separada
+//   por null). Se deja el propio color de Estático solo para Desplazamiento.
+// - Marcador "Nodos": por nodo (node_response_series), SIEMPRE (las 4 pestañas) —
+//   para que los nodos críticos salten a la vista en rojo, no solo la línea.
+// La geometría/curvatura no se toca, solo el color.
+const recolorByMetric = (
+  vizData: any,
+  structure: any,
+  results: HarmonicResults | null,
+  activeMetric: MetricKey,
+  frequencyIndex: number,
+) => {
+  if (!vizData?.data || !results) return vizData;
+  const metric = metricConfig(activeMetric);
+  const elementSeries = results.element_response_series ?? {};
+  const nodeSeries = results.node_response_series ?? {};
+  const keyI = `${activeMetric}_i`;
+  const keyJ = `${activeMetric}_j`;
+  const recolorLines = activeMetric !== "displacement_m";
+
+  let globalMin = Infinity;
+  let globalMax = -Infinity;
+
+  const isDeformadaLine = (trace: any) =>
+    trace.type === "scatter3d" && String(trace.name ?? "").startsWith("Deformada") && Array.isArray(trace.customdata);
+
+  const withLineColor = vizData.data.map((trace: any) => {
+    if (!isDeformadaLine(trace)) return trace;
+    // Ancho mas grande SIEMPRE (tambien en Desplazamiento, que no se recolorea
+    // acá — usa el color nativo del backend, solo se engorda la línea).
+    if (!recolorLines) return { ...trace, line: { ...trace.line, width: 8 } };
+    const n = trace.customdata.length;
+    const newColor: (number | null)[] = new Array(n).fill(null);
+    let runStart = 0;
+    for (let i = 0; i <= n; i++) {
+      const row = i < n ? trace.customdata[i] : null;
+      const boundary = i === n || !row || row[6] === null || row[6] === undefined;
+      if (!boundary) continue;
+      const runLen = i - runStart;
+      if (runLen > 0) {
+        const elementId = trace.customdata[runStart]?.[6];
+        const series = (elementSeries as any)[String(elementId)];
+        const vI = Number(series?.[keyI]?.[frequencyIndex] ?? 0);
+        const vJ = Number(series?.[keyJ]?.[frequencyIndex] ?? 0);
+        for (let k = 0; k < runLen; k++) {
+          const t = runLen > 1 ? k / (runLen - 1) : 0;
+          const display = metricDisplayValue(vI + (vJ - vI) * t, activeMetric);
+          newColor[runStart + k] = display;
+          if (display < globalMin) globalMin = display;
+          if (display > globalMax) globalMax = display;
+        }
+      }
+      runStart = i + 1;
+    }
+    return { ...trace, line: { ...trace.line, color: newColor } };
+  });
+
+  let colorbarAssigned = false;
+  const withLineScale = withLineColor.map((trace: any) => {
+    if (!recolorLines || !Number.isFinite(globalMin) || !isDeformadaLine(trace)) {
+      return trace;
+    }
+    const cmax = globalMax > globalMin ? globalMax : globalMin + 1e-6;
+    const wasColorbarHolder = !!trace.line?.showscale;
+    const nextLine = { ...trace.line, width: 8, cmin: globalMin, cmax, colorscale: "Jet" };
+    if (wasColorbarHolder && !colorbarAssigned) {
+      colorbarAssigned = true;
+      nextLine.colorbar = {
+        ...(trace.line?.colorbar ?? {}),
+        title: { ...(trace.line?.colorbar?.title ?? {}), text: `${metric.label} (${metric.unit})` },
+      };
+    }
+    return { ...trace, line: nextLine };
+  });
+
+  // Nodos: en el mismo orden que structure.nodes (process_nodes preserva orden e
+  // id tal cual vienen del wire format), sin customdata propio en el trazo del
+  // backend — por eso el mapeo es por índice, no por id embebido en el trazo.
+  const nodeIds: number[] = Array.isArray(structure?.nodes) ? structure.nodes.map((n: any) => Number(n?.id)) : [];
+  let nodeMin = Infinity;
+  let nodeMax = -Infinity;
+  const nodeValues = nodeIds.map((nodeId) => {
+    const raw = Number(nodeSeries[String(nodeId)]?.[activeMetric]?.[frequencyIndex] ?? 0);
+    const display = metricDisplayValue(raw, activeMetric);
+    if (display < nodeMin) nodeMin = display;
+    if (display > nodeMax) nodeMax = display;
+    return display;
+  });
+  const nodeCmax = nodeMax > nodeMin ? nodeMax : nodeMin + 1e-6;
+
+  const finalized = withLineScale.map((trace: any) => {
+    if (trace.type !== "scatter3d" || trace.name !== "Nodos" || !Number.isFinite(nodeMin) || nodeValues.length !== (trace.x?.length ?? -1)) {
+      return trace;
+    }
+    return {
+      ...trace,
+      marker: {
+        ...trace.marker,
+        size: 10,
+        color: nodeValues,
+        colorscale: "Jet",
+        cmin: nodeMin,
+        cmax: nodeCmax,
+        opacity: 1,
+        line: { color: "rgba(15,23,42,0.85)", width: 1.5 },
+      },
+      hovertext: nodeIds.map((nodeId, i) => `<b>Nodo ${nodeId}</b><br>${metric.label}: ${nodeValues[i].toFixed(3)} ${metric.unit}`),
+    };
+  });
+
+  return { ...vizData, data: finalized };
+};
+
+// 14% del vano principal repartido sobre el peor desplazamiento de TODO el
+// barrido de frecuencias (no solo la frecuencia actual, para que no salte al
+// mover el slider). Reusable: hace falta tanto en un useMemo (recalculo cuando
+// cambian structure/results) como justo después de recibir un resultado nuevo
+// (ahí React todavía no actualizó el estado `results`, así que no se puede
+// depender del useMemo en ese instante).
+const computeAutoScale = (structure: any, results: HarmonicResults | null): number => {
+  const nodes = Array.isArray(structure?.nodes) ? structure.nodes : [];
+  if (!nodes.length || !results) return 1;
+  const coords = nodes.map((n: any) => n.coords ?? [0, 0, 0]);
+  const spanOf = (axis: number) => {
+    const values = coords.map((c: number[]) => Number(c[axis]) || 0);
+    return Math.max(...values) - Math.min(...values);
+  };
+  const baseSpan = Math.max(spanOf(0), spanOf(1), spanOf(2), 1e-6);
+
+  let maxDisp = 0;
+  for (const series of Object.values(results.node_response_series ?? {})) {
+    for (const value of (series as HarmonicNodeSeries).displacement_m ?? []) {
+      if (Number.isFinite(value) && (value as number) > maxDisp) maxDisp = value as number;
+    }
+  }
+  if (maxDisp <= 0) return 1;
+  return Math.min(Math.max((baseSpan * 0.35) / maxDisp, 0.05), 2000);
 };
 
 const HarmonicAnalysisView: React.FC = () => {
   const [structure, setStructure] = useState<any>(null);
+  const [motionVizBase, setMotionVizBase] = useState<any>(null);
+  const [motionVizLoading, setMotionVizLoading] = useState(false);
   const [results, setResults] = useState<HarmonicResults | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -574,9 +483,13 @@ const HarmonicAnalysisView: React.FC = () => {
   const [selectedNodeId, setSelectedNodeId] = useState("all");
   const [activeMetric, setActiveMetric] = useState<MetricKey>("displacement_m");
   const [visualMode, setVisualMode] = useState<"motion" | "spectrum">("motion");
+  const [animationEnabled, setAnimationEnabled] = useState(true);
   const [selectedFrequencyIndex, setSelectedFrequencyIndex] = useState(0);
   const [visualScale, setVisualScale] = useState(1);
   const [impedanceMatrixOpen, setImpedanceMatrixOpen] = useState(false);
+  const [nodeTableOpen, setNodeTableOpen] = useState(false);
+  const [selectedElementId, setSelectedElementId] = useState<number | null>(null);
+  const [bdMatrixOpen, setBdMatrixOpen] = useState(false);
   const { theme } = useTheme();
 
   const availableNodeIds = useMemo(() => getAvailableNodeIds(structure), [structure]);
@@ -584,13 +497,21 @@ const HarmonicAnalysisView: React.FC = () => {
   const globalPeak = nodePeaks[0] ?? null;
   const unbalancedMe = unbalancedMass * unbalancedEccentricity;
   const selectedFrequency = results?.frequencies_sweep?.[selectedFrequencyIndex] ?? null;
+  // Escala que hace visible la deformada por default: 14% del vano principal de
+  // la estructura repartido sobre el PEOR desplazamiento de TODO el barrido (no
+  // solo la frecuencia actual, para que no salte al mover el slider de frecuencia).
+  // Sin esto, "Auto" quedaba fijo en 1.00x — invisible en estructuras grandes con
+  // respuesta chica (mm) frente al tamaño real (m): parecía que "no animaba".
+  const autoScale = useMemo(() => computeAutoScale(structure, results), [structure, results]);
   const chartData = useMemo(
     () => (results ? buildFrequencyChart(results, selectedNodeId, useLogScale, theme, activeMetric) : null),
     [results, selectedNodeId, theme, useLogScale, activeMetric],
   );
+  // Reescala en el cliente el viz base (pedido siempre con scale=1.0 y cacheado
+  // por frecuencia): mover el slider de escala no vuelve a pegarle al backend.
   const motionData = useMemo(
-    () => (results && structure ? buildHarmonicMotionView(structure, results, selectedFrequencyIndex, theme, activeMetric, visualScale) : null),
-    [results, structure, selectedFrequencyIndex, theme, activeMetric, visualScale],
+    () => recolorByMetric(applyClientScaling(motionVizBase, visualScale), structure, results, activeMetric, selectedFrequencyIndex),
+    [motionVizBase, visualScale, structure, results, activeMetric, selectedFrequencyIndex],
   );
   const activePlotData = visualMode === "motion" ? motionData : chartData;
 
@@ -632,6 +553,66 @@ const HarmonicAnalysisView: React.FC = () => {
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
+
+  // Misma paleta/curvatura Hermite que Estático y Modal: la vista de movimiento
+  // se pide al mismo endpoint backend (generate_results_figure) en vez de armarse
+  // en el cliente. El color por Vel/Acel/Esfuerzo se recalcula aparte en
+  // recolorByMetric (esa función del backend no sabe de esas métricas, solo de
+  // desplazamiento). Usa solo la parte REAL del desplazamiento complejo a la
+  // frecuencia elegida (fase 0) para la GEOMETRÍA — se pierde el desfase de la
+  // parte imaginaria entre grados de libertad ahí, no en el color.
+  const motionVizCache = useRef<Map<string, any>>(new Map());
+
+  useEffect(() => {
+    if (!results || !structure || visualMode !== "motion") return;
+    const frequencyHz = results.frequencies_sweep?.[selectedFrequencyIndex];
+    if (!Number.isFinite(frequencyHz)) return;
+
+    const baseCacheKey = `${hashString(JSON.stringify(structure))}:${freqStart}:${freqEnd}:${numPoints}:${dampingPercent}:${isUnbalanced}:${unbalancedMe}:${unbalancedNodeId}:${JSON.stringify(unbalancedDirection)}:${frequencyHz.toFixed(6)}:${theme}`;
+
+    const cached = motionVizCache.current.get(baseCacheKey);
+    if (cached) {
+      setMotionVizBase(cached);
+      return;
+    }
+
+    let cancelled = false;
+    setMotionVizLoading(true);
+    authenticatedFetch(
+      `/api/visualization/harmonic-results?frequency_hz=${frequencyHz}&scale=1.0&theme=${theme}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          structure,
+          freq_start: freqStart,
+          freq_end: freqEnd,
+          num_points: numPoints,
+          damping_ratio: dampingPercent / 100,
+          is_unbalanced: isUnbalanced,
+          unbalanced_me: isUnbalanced ? unbalancedMe : 0,
+          unbalanced_node_id: isUnbalanced ? Number(unbalancedNodeId) : null,
+          unbalanced_direction: isUnbalanced
+            ? [unbalancedDirection.x, unbalancedDirection.y, unbalancedDirection.z]
+            : [0, 1, 0],
+          unbalanced_mass: isUnbalanced ? unbalancedMass : 0,
+          unbalanced_eccentricity: isUnbalanced ? unbalancedEccentricity : 0,
+        }),
+      },
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        motionVizCache.current.set(baseCacheKey, data);
+        setMotionVizBase(data);
+      })
+      .catch(() => { if (!cancelled) setMotionVizBase(null); })
+      .finally(() => { if (!cancelled) setMotionVizLoading(false); });
+    return () => { cancelled = true; };
+  }, [
+    results, structure, visualMode, selectedFrequencyIndex, theme,
+    freqStart, freqEnd, numPoints, dampingPercent, isUnbalanced,
+    unbalancedMe, unbalancedNodeId, unbalancedDirection, unbalancedMass, unbalancedEccentricity,
+  ]);
 
   useEffect(() => {
     if (availableNodeIds.length === 0) {
@@ -712,6 +693,7 @@ const HarmonicAnalysisView: React.FC = () => {
 
       const analysisData = (await response.json()) as HarmonicResults;
       setResults(analysisData);
+      setVisualScale(computeAutoScale(structure, analysisData));
       const peaks = getNodePeaks(analysisData);
       setSelectedNodeId(peaks[0]?.nodeId ?? "all");
       const peakFreq = Number(peaks[0]?.frequency ?? analysisData.peak_frequency ?? analysisData.frequencies_sweep?.[0] ?? 0);
@@ -912,6 +894,11 @@ const HarmonicAnalysisView: React.FC = () => {
                 </button>
               ))}
             </div>
+            {visualMode === "motion" && (
+              <p className="px-1 text-[7px] font-mono text-gray-400">
+                La vista 3D usa el mismo motor gráfico que Estático/Modal (curvatura y estilo), recoloreada según la pestaña elegida.
+              </p>
+            )}
 
             <div className="premium-card-inner p-1 grid grid-cols-2 gap-1">
               {(["motion", "spectrum"] as const).map((mode) => (
@@ -924,6 +911,26 @@ const HarmonicAnalysisView: React.FC = () => {
                 </button>
               ))}
             </div>
+
+            {visualMode === "motion" && (
+              <button
+                type="button"
+                onClick={() => setAnimationEnabled((prev) => !prev)}
+                className={`premium-card-inner p-2 flex w-full items-center justify-between cursor-pointer transition-all ${
+                  animationEnabled
+                    ? "border-accent-secondary/40 bg-accent-secondary/10 text-accent-secondary"
+                    : "text-gray-500 dark:text-gray-400"
+                }`}
+              >
+                <span className="flex items-center gap-2 text-[7px] lg:text-[9px] font-bold uppercase tracking-wider font-mono">
+                  <Waves size={12} />
+                  Animación
+                </span>
+                <span className="text-[8px] font-mono font-black uppercase">
+                  {animationEnabled ? "Reproduciendo" : "Pausada"}
+                </span>
+              </button>
+            )}
 
             {results && results.frequencies_sweep.length > 1 && (
               <div className="premium-card-inner p-3">
@@ -950,6 +957,28 @@ const HarmonicAnalysisView: React.FC = () => {
                   </span>
                   <span className="text-[8px] font-mono font-black uppercase">Ver</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setNodeTableOpen(true)}
+                  className="mt-2 flex w-full cursor-pointer items-center justify-between gap-2 rounded-xl border border-cyan-400/20 bg-cyan-500/5 px-3 py-2 text-cyan-700 transition-all hover:bg-cyan-500/10 dark:text-cyan-300"
+                >
+                  <span className="flex items-center gap-2 text-[8px] lg:text-[9px] font-bold uppercase tracking-wider font-mono">
+                    <SlidersHorizontal size={12} />
+                    Tabla de nodos X/Y/Z
+                  </span>
+                  <span className="text-[8px] font-mono font-black uppercase">Ver</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBdMatrixOpen(true)}
+                  className="mt-2 flex w-full cursor-pointer items-center justify-between gap-2 rounded-xl border border-emerald-400/20 bg-emerald-500/5 px-3 py-2 text-emerald-700 transition-all hover:bg-emerald-500/10 dark:text-emerald-300"
+                >
+                  <span className="flex items-center gap-2 text-[8px] lg:text-[9px] font-bold uppercase tracking-wider font-mono">
+                    <span className="font-black">B·D</span>
+                    Matrices [B] y [D] por elemento
+                  </span>
+                  <span className="text-[8px] font-mono font-black uppercase">Ver</span>
+                </button>
               </div>
             )}
 
@@ -969,7 +998,7 @@ const HarmonicAnalysisView: React.FC = () => {
                     <span className="min-w-14 text-center text-[9px] font-mono font-black text-accent-secondary">{visualScale.toFixed(2)}×</span>
                     <button
                       type="button"
-                      onClick={() => setVisualScale((value) => Math.min(8, Number((value * 1.25).toFixed(2))))}
+                      onClick={() => setVisualScale((value) => Math.min(Math.max(8, autoScale * 2), Number((value * 1.25).toFixed(2))))}
                       className="w-7 h-6 rounded-lg bg-gray-100 dark:bg-black/30 text-gray-500 hover:text-accent-secondary font-black text-xs"
                       aria-label="Aumentar escala de deformada"
                     >
@@ -977,7 +1006,7 @@ const HarmonicAnalysisView: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setVisualScale(1)}
+                      onClick={() => setVisualScale(autoScale)}
                       className="ml-1 px-2 h-6 rounded-lg bg-unsaac-gold/15 text-[8px] font-black uppercase text-gray-600 dark:text-gray-300 hover:bg-unsaac-gold/25"
                     >
                       Auto
@@ -987,7 +1016,7 @@ const HarmonicAnalysisView: React.FC = () => {
                 <input
                   type="range"
                   min="0.05"
-                  max="8"
+                  max={Math.max(8, autoScale * 2)}
                   step="0.05"
                   value={visualScale}
                   onChange={(event) => setVisualScale(Number(event.target.value))}
@@ -1024,6 +1053,46 @@ const HarmonicAnalysisView: React.FC = () => {
           {error && (
             <div className="mt-3 p-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500 text-[10px] font-mono font-bold leading-relaxed">
               {error}
+            </div>
+          )}
+
+          {selectedElementId != null && results && (
+            <div className="mt-3 p-3 rounded-2xl premium-card-inner border border-accent-secondary/20">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-accent-secondary font-mono">
+                  Elemento {selectedElementId}
+                </span>
+                <button onClick={() => setSelectedElementId(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-[10px] font-bold cursor-pointer">
+                  ✕
+                </button>
+              </div>
+              {(() => {
+                const iVal = getElementMetricSeries(results, String(selectedElementId), "i", activeMetric)[selectedFrequencyIndex];
+                const jVal = getElementMetricSeries(results, String(selectedElementId), "j", activeMetric)[selectedFrequencyIndex];
+                return (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="premium-card-inner p-2">
+                      <span className="text-[8px] text-gray-500 font-bold uppercase mb-0.5 block font-mono">Extremo i</span>
+                      <span className="text-[11px] font-mono font-bold text-gray-900 dark:text-gray-100 block">
+                        {Number.isFinite(iVal) ? formatMetric(iVal, activeMetric) : "--"}
+                      </span>
+                    </div>
+                    <div className="premium-card-inner p-2">
+                      <span className="text-[8px] text-gray-500 font-bold uppercase mb-0.5 block font-mono">Extremo j</span>
+                      <span className="text-[11px] font-mono font-bold text-gray-900 dark:text-gray-100 block">
+                        {Number.isFinite(jVal) ? formatMetric(jVal, activeMetric) : "--"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+              <button
+                type="button"
+                onClick={() => setBdMatrixOpen(true)}
+                className="mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-500/5 px-3 py-2 text-[8px] font-bold uppercase tracking-wider text-emerald-700 transition-all hover:bg-emerald-500/10 dark:text-emerald-300"
+              >
+                Ver matrices [B] y [D]
+              </button>
             </div>
           )}
         </div>
@@ -1117,10 +1186,17 @@ const HarmonicAnalysisView: React.FC = () => {
 
           <GraphicsView
             data={activePlotData}
-            loading={loading}
+            loading={loading || (visualMode === "motion" && motionVizLoading && !motionData)}
             error={error}
             className="h-full w-full bg-transparent! dark:bg-transparent!"
-            animation={{ enabled: visualMode === "motion" && !!motionData, scale: 1, fps: 30, speedHz: 0.45 }}
+            // El customdata que manda el backend trae el delta SIN escalar (mismo
+            // criterio que Modal). El fetch pide siempre scale=1.0 y el reescalado
+            // real pasa acá — si esto queda en 1 fijo, la pose estática (con
+            // visualScale, p.ej. 5.75x) se ve bien deformada pero al animar el
+            // movimiento se reduce a una fracción invisible: "no anima" en la
+            // práctica aunque las coordenadas sí cambien cuadro a cuadro.
+            animation={{ enabled: visualMode === "motion" && !!motionData && animationEnabled, scale: visualScale, fps: 30, speedHz: 0.45 }}
+            onElementSelect={results ? setSelectedElementId : undefined}
           />
         </div>
       </div>
@@ -1131,6 +1207,23 @@ const HarmonicAnalysisView: React.FC = () => {
           initialFrequencyHz={selectedFrequency ?? 1}
           dampingRatio={dampingPercent / 100}
           onClose={() => setImpedanceMatrixOpen(false)}
+        />
+      )}
+
+      {nodeTableOpen && structure && results && (
+        <NodeResponseTable
+          structure={structure}
+          results={results}
+          frequencyIndex={selectedFrequencyIndex}
+          onClose={() => setNodeTableOpen(false)}
+        />
+      )}
+
+      {bdMatrixOpen && structure && (
+        <BDMatrixInspector
+          structure={structure}
+          initialElementId={selectedElementId ?? Number(structure?.elements?.[0]?.id ?? 1)}
+          onClose={() => setBdMatrixOpen(false)}
         />
       )}
     </div>

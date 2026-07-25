@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
+  Download,
   Grid3X3,
   Info,
   Loader2,
@@ -10,6 +11,8 @@ import {
   X,
 } from "lucide-react";
 import { authenticatedFetch } from "../lib/api";
+import { downloadCanvasPng, downloadTablePng } from "../lib/matrixImage";
+import { useFitScale } from "../lib/useFitScale";
 
 type MatrixKind = "stiffness" | "mass" | "damping";
 type MatrixScope = "full" | "free";
@@ -53,6 +56,7 @@ interface HeatmapProps {
   rowStart: number;
   colStart: number;
   windowSize: number;
+  fileName: string;
   onPick: (rowBin: number, colBin: number) => void;
 }
 
@@ -80,6 +84,7 @@ const MatrixHeatmap: React.FC<HeatmapProps> = ({
   rowStart,
   colStart,
   windowSize,
+  fileName,
   onPick,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -102,7 +107,7 @@ const MatrixHeatmap: React.FC<HeatmapProps> = ({
     const context = canvas.getContext("2d");
     if (!context) return;
 
-    const pixels = 720;
+    const pixels = 1440;
     canvas.width = pixels;
     canvas.height = pixels;
     context.fillStyle = "#070B12";
@@ -178,6 +183,13 @@ const MatrixHeatmap: React.FC<HeatmapProps> = ({
           onPick(rowBin, colBin);
         }}
       />
+      <button
+        type="button"
+        onClick={() => downloadCanvasPng(canvasRef.current, fileName)}
+        className="absolute right-2 top-2 flex items-center gap-1 rounded-lg bg-black/60 px-2 py-1.5 text-[8px] font-black uppercase tracking-wider text-gray-200 backdrop-blur-md transition hover:bg-black/80 hover:text-white"
+      >
+        <Download size={11} /> PNG
+      </button>
       <div className="pointer-events-none absolute inset-x-3 bottom-3 flex items-center justify-between rounded-lg bg-black/60 px-2.5 py-1.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 backdrop-blur-md">
         <span>Menor |valor|</span>
         <span className="h-1.5 w-24 rounded-full bg-gradient-to-r from-blue-700 via-cyan-400 via-amber-400 to-red-500" />
@@ -200,6 +212,10 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
   const [payload, setPayload] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { containerRef, contentRef, contentNode, wrapperStyle, contentStyle } = useFitScale<
+    HTMLDivElement,
+    HTMLTableElement
+  >();
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
@@ -446,6 +462,7 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
                   rowStart={activeWindow.row_start}
                   colStart={activeWindow.col_start}
                   windowSize={activeWindow.size}
+                  fileName={`mapa-${scopedSymbol}-${payload.matrix.dimension}x${payload.matrix.dimension}.png`}
                   onPick={pickHeatmapCell}
                 />
 
@@ -503,16 +520,37 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
                         {[6, 12, 18, 24, 36].map((size) => <option key={size} value={size}>{size}×{size}</option>)}
                       </select>
                     </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadTablePng(
+                          contentNode,
+                          `matriz-${scopedSymbol}-${activeWindow.row_start + 1}-${activeWindow.col_start + 1}-${activeWindow.size}x${activeWindow.size}.png`,
+                          `${scopedSymbol} · filas ${activeWindow.row_start + 1}–${activeWindow.row_start + activeWindow.size} · columnas ${activeWindow.col_start + 1}–${activeWindow.col_start + activeWindow.size}`,
+                        )
+                      }
+                      className="flex items-center gap-1 self-end rounded-lg border border-gray-200 px-2.5 py-1.5 text-[8px] font-black uppercase tracking-wider text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:border-white/10 dark:hover:bg-white/10 dark:hover:text-white"
+                    >
+                      <Download size={11} /> PNG
+                    </button>
                   </div>
                 </div>
 
-                <div className="relative max-h-[52vh] overflow-auto rounded-2xl border border-gray-200 custom-scrollbar dark:border-white/10 lg:max-h-[510px]">
+                <div
+                  ref={containerRef}
+                  className="relative max-h-[52vh] overflow-auto rounded-2xl border border-gray-200 custom-scrollbar dark:border-white/10 lg:max-h-[510px]"
+                >
                   {loading && (
                     <div className="absolute inset-0 z-40 flex items-center justify-center bg-white/70 backdrop-blur-sm dark:bg-[#080D16]/70">
                       <Loader2 size={20} className="animate-spin text-cyan-500" />
                     </div>
                   )}
-                  <table className="w-max min-w-full border-separate border-spacing-0 font-mono text-[8px] tabular-nums sm:text-[9px]">
+                  <div style={wrapperStyle}>
+                  <table
+                    ref={contentRef}
+                    style={contentStyle}
+                    className="w-max min-w-full border-separate border-spacing-0 font-mono text-[8px] tabular-nums sm:text-[9px]"
+                  >
                     <thead>
                       <tr>
                         <th className="sticky left-0 top-0 z-30 border-b border-r border-gray-200 bg-gray-100 px-2 py-2 text-gray-400 dark:border-white/10 dark:bg-[#111827]">GDL</th>
@@ -548,6 +586,7 @@ const GlobalMatrixInspector: React.FC<GlobalMatrixInspectorProps> = ({
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
 
                 <div className="grid gap-2 sm:grid-cols-2">

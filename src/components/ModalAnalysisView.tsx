@@ -13,9 +13,12 @@ import {
   Info,
   CheckCircle2,
   TableProperties,
+  Download,
 } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { authenticatedFetch } from "../lib/api";
+import { downloadTablePng } from "../lib/matrixImage";
+import { useFitScale } from "../lib/useFitScale";
 
 const hashString = (value: string) => {
   let hash = 2166136261;
@@ -64,6 +67,13 @@ const ModalAnalysisView: React.FC = () => {
   const [matrixFrame, setMatrixFrame] = useState<MatrixFrame>("local");
   const [globalMatrixOpen, setGlobalMatrixOpen] = useState(false);
   const { theme } = useTheme();
+  const {
+    containerRef: matrixContainerRef,
+    contentRef: matrixTableRef,
+    contentNode: matrixTableNode,
+    wrapperStyle: matrixWrapperStyle,
+    contentStyle: matrixContentStyle,
+  } = useFitScale<HTMLDivElement, HTMLTableElement>();
 
   const vizCache = useRef<Map<string, any>>(new Map());
   const modalResultCache = useRef<Map<string, any>>(new Map());
@@ -734,9 +744,30 @@ const ModalAnalysisView: React.FC = () => {
                           ? "Tₑ · 12 × 12"
                           : <>{matrixKind === "stiffness" ? "Kₑ" : "Mₑ"}<sup>{matrixFrame === "local" ? "L" : "G"}</sup> · 12 × 12</>}
                       </span>
-                      <span>{matrixUnit}</span>
+                      <span className="flex items-center gap-2">
+                        {matrixUnit}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            downloadTablePng(
+                              matrixTableNode,
+                              `elemento-${selectedElementId}-${matrixKind}-${matrixKind === "transformation" ? "" : matrixFrame}.png`,
+                              `Elemento ${selectedElementId} · ${matrixKind === "transformation" ? "Tₑ" : `${matrixKind === "stiffness" ? "Kₑ" : "Mₑ"} ${matrixFrame}`} · 12 × 12 · ${matrixUnit}`,
+                            )
+                          }
+                          className="flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1 font-black tracking-wider text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:border-white/10 dark:hover:bg-white/10 dark:hover:text-white"
+                        >
+                          <Download size={11} /> PNG
+                        </button>
+                      </span>
                     </div>
-                    <table className="w-max min-w-full border-separate border-spacing-0 font-mono text-[8px] tabular-nums lg:text-[9px]">
+                    <div ref={matrixContainerRef}>
+                    <div style={matrixWrapperStyle}>
+                    <table
+                      ref={matrixTableRef}
+                      style={matrixContentStyle}
+                      className="w-max min-w-full border-separate border-spacing-0 font-mono text-[8px] tabular-nums lg:text-[9px]"
+                    >
                       <thead>
                         <tr>
                           <th className="sticky left-0 top-0 z-30 border-b border-r border-gray-200 bg-gray-100 px-2 py-2 text-gray-400 dark:border-white/10 dark:bg-[#111827]">GDL</th>
@@ -772,6 +803,8 @@ const ModalAnalysisView: React.FC = () => {
                         ))}
                       </tbody>
                     </table>
+                    </div>
+                    </div>
                   </>
                 )}
               </div>

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { CheckCircle2, Info, Loader2, X } from "lucide-react";
+import { CheckCircle2, Download, Info, Loader2, X } from "lucide-react";
 import { authenticatedFetch } from "../lib/api";
+import { downloadTablePng } from "../lib/matrixImage";
+import { useFitScale } from "../lib/useFitScale";
 
 interface BDMatrixInspectorProps {
   structure: any;
@@ -33,6 +35,10 @@ const BDMatrixInspector: React.FC<BDMatrixInspectorProps> = ({ structure, initia
   const [payload, setPayload] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { containerRef, contentRef, contentNode, wrapperStyle, contentStyle } = useFitScale<
+    HTMLDivElement,
+    HTMLTableElement
+  >();
 
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
@@ -187,8 +193,31 @@ const BDMatrixInspector: React.FC<BDMatrixInspectorProps> = ({ structure, initia
                 </span>
               </div>
 
-              <div className="mt-3 overflow-x-auto rounded-2xl border border-gray-200 dark:border-white/10">
-                <table className="w-max min-w-full border-separate border-spacing-0 font-mono text-[9px] tabular-nums">
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() =>
+                    downloadTablePng(
+                      contentNode,
+                      `matriz-B-elemento-${elementId}-${rowKey}.png`,
+                      `[B] elemento ${elementId} · ${activeTab.label} · ${rowKey === "torsion" ? "G" : "E"} = ${formatCompact(D)} Pa`,
+                    )
+                  }
+                  className="flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[8px] font-black uppercase tracking-wider text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:border-white/10 dark:hover:bg-white/10 dark:hover:text-white"
+                >
+                  <Download size={11} /> PNG
+                </button>
+              </div>
+              <div
+                ref={containerRef}
+                className="mt-2 overflow-x-auto rounded-2xl border border-gray-200 dark:border-white/10"
+              >
+                <div style={wrapperStyle}>
+                <table
+                  ref={contentRef}
+                  style={contentStyle}
+                  className="w-max min-w-full border-separate border-spacing-0 font-mono text-[9px] tabular-nums"
+                >
                   <thead>
                     <tr>
                       {dofLabels.map((label) => (
@@ -216,6 +245,7 @@ const BDMatrixInspector: React.FC<BDMatrixInspectorProps> = ({ structure, initia
                     </tr>
                   </tbody>
                 </table>
+                </div>
               </div>
 
               <p className="mt-3 text-[8px] font-mono leading-relaxed text-gray-400">

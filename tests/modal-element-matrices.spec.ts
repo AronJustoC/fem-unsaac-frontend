@@ -112,6 +112,10 @@ test('modal element click opens responsive K/M inspector while animation is acti
   const plot = page.locator('.js-plotly-plot');
   await expect(plot).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/Selecciona una barra/)).toBeVisible();
+  const deformationScale = page.locator('input[type="range"]').first();
+  await expect(deformationScale).toHaveAttribute('max', '160');
+  await expect(deformationScale).toHaveAttribute('step', '16');
+  await expect(deformationScale).toHaveValue('80');
 
   // Emula el plotly_click real después de varios frames de restyle(): el
   // listener debe seguir registrado aun con "Animación rápida" activa.

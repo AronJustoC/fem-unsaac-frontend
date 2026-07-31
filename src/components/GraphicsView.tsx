@@ -1,7 +1,11 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { Maximize2, Minimize2, Download, Box, RotateCcw } from "lucide-react";
+import { Maximize2, Minimize2, Download, Box, RotateCcw, Waypoints, Grid3x3, Axis3d } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { getPlotlyTheme } from "../lib/plotly_theme";
+import AxisTriad, {
+  type AxisTriadHandle,
+  type PlotlyCamera,
+} from "./AxisTriad";
 
 interface GraphicsViewProps {
   data: any;
@@ -15,6 +19,8 @@ interface GraphicsViewProps {
     speedHz?: number;
   };
   onElementSelect?: (elementId: number) => void;
+  nodeIds?: number[];
+  onNodeSelect?: (nodeId: number) => void;
 }
 
 const GraphicsView: React.FC<GraphicsViewProps> = ({
@@ -24,11 +30,23 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   className,
   animation,
   onElementSelect,
+  nodeIds = [],
+  onNodeSelect,
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [renderMode, setRenderMode] = useState<"solid" | "wireframe">("solid");
+  const [showAxes, setShowAxes] = useState(true);
+  const [showAxisTriad, setShowAxisTriad] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
+  const axisTriadRef = useRef<AxisTriadHandle>(null);
   const plotRef = useRef<any>(null);
-  const clickBindingRef = useRef<{ graphDiv: any; handler: (event: any) => void } | null>(null);
+  const pendingAxisCameraRef = useRef<PlotlyCamera | null>(null);
+  const axisCameraFrameRef = useRef<number | null>(null);
+  const plotBindingRef = useRef<{
+    graphDiv: any;
+    clickHandler?: (event: any) => void;
+    cameraHandler: (event?: any) => void;
+  } | null>(null);
   const { theme } = useTheme();
   // Estado para cargar Plotly dinámicamente solo en el cliente
   const [PlotComponent, setPlotComponent] = useState<any>(null);
@@ -65,7 +83,11 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   const sceneFraming = useMemo(() => {
     if (!data?.layout?.scene || !Array.isArray(data?.data)) return null;
 
-    const signature = data.data.map((t: any) => `${t.type}:${t.x?.length ?? 0}`).join("|");
+    const signature = `framing-v2:${animation?.enabled ? "animated" : "static"}:`
+      + data.data.map((t: any) => `${t.type}:${t.x?.length ?? 0}`).join("|");
+    const deformationScale = animation?.enabled
+      ? Math.abs(Number(animation.scale) || 0)
+      : 0;
 
     const minCoords = [Infinity, Infinity, Infinity];
     const maxCoords = [-Infinity, -Infinity, -Infinity];
@@ -88,20 +110,20 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       // (que puede llegar más lejos en otra fase) se recorta contra el borde del eje.
       // customdata ya trae la amplitud real/imag por eje (misma convención que usa
       // el loop de animación): la excursión máxima en cualquier fase es hypot(re,im).
-      if (Array.isArray(trace?.customdata)) {
+      if (deformationScale > 0 && Array.isArray(trace?.customdata)) {
         for (const row of trace.customdata) {
           if (!Array.isArray(row) || row[0] === null || row[0] === undefined) continue;
           const [x, y, z] = row;
           if (row.length >= 9) {
             const [, , , dxR, dyR, dzR, dxI, dyI, dzI] = row;
-            grow(0, Number(x) - Math.hypot(dxR, dxI)); grow(0, Number(x) + Math.hypot(dxR, dxI));
-            grow(1, Number(y) - Math.hypot(dyR, dyI)); grow(1, Number(y) + Math.hypot(dyR, dyI));
-            grow(2, Number(z) - Math.hypot(dzR, dzI)); grow(2, Number(z) + Math.hypot(dzR, dzI));
+            grow(0, Number(x) - deformationScale * Math.hypot(dxR, dxI)); grow(0, Number(x) + deformationScale * Math.hypot(dxR, dxI));
+            grow(1, Number(y) - deformationScale * Math.hypot(dyR, dyI)); grow(1, Number(y) + deformationScale * Math.hypot(dyR, dyI));
+            grow(2, Number(z) - deformationScale * Math.hypot(dzR, dzI)); grow(2, Number(z) + deformationScale * Math.hypot(dzR, dzI));
           } else if (row.length >= 6) {
             const [, , , dx, dy, dz] = row;
-            grow(0, Number(x) - Math.abs(dx)); grow(0, Number(x) + Math.abs(dx));
-            grow(1, Number(y) - Math.abs(dy)); grow(1, Number(y) + Math.abs(dy));
-            grow(2, Number(z) - Math.abs(dz)); grow(2, Number(z) + Math.abs(dz));
+            grow(0, Number(x) - deformationScale * Math.abs(dx)); grow(0, Number(x) + deformationScale * Math.abs(dx));
+            grow(1, Number(y) - deformationScale * Math.abs(dy)); grow(1, Number(y) + deformationScale * Math.abs(dy));
+            grow(2, Number(z) - deformationScale * Math.abs(dz)); grow(2, Number(z) + deformationScale * Math.abs(dz));
           }
         }
       }
@@ -146,7 +168,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       range: { x: range[0], y: range[1], z: range[2] },
       eye: { x: eyeComponent(spans[0]), y: eyeComponent(spans[1]), z: eyeComponent(spans[2]) },
     };
-  }, [data]);
+  }, [data, animation?.enabled, animation?.scale]);
 
   const themeAwareLayout = useMemo(() => {
     if (!data?.layout) return null;
@@ -203,9 +225,9 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       nextLayout.scene = {
         ...data.layout.scene,
         bgcolor: data.layout.scene.bgcolor ?? plotTheme.plotBackground,
-        xaxis: withAxisTheme({ ...data.layout.scene?.xaxis, range: sceneFraming?.range.x ?? data.layout.scene?.xaxis?.range }),
-        yaxis: withAxisTheme({ ...data.layout.scene?.yaxis, range: sceneFraming?.range.y ?? data.layout.scene?.yaxis?.range }),
-        zaxis: withAxisTheme({ ...data.layout.scene?.zaxis, range: sceneFraming?.range.z ?? data.layout.scene?.zaxis?.range }),
+        xaxis: withAxisTheme({ ...data.layout.scene?.xaxis, range: sceneFraming?.range.x ?? data.layout.scene?.xaxis?.range, visible: showAxes }),
+        yaxis: withAxisTheme({ ...data.layout.scene?.yaxis, range: sceneFraming?.range.y ?? data.layout.scene?.yaxis?.range, visible: showAxes }),
+        zaxis: withAxisTheme({ ...data.layout.scene?.zaxis, range: sceneFraming?.range.z ?? data.layout.scene?.zaxis?.range, visible: showAxes }),
         aspectmode: "data",
         dragmode: "orbit",
         camera: sceneFraming
@@ -220,7 +242,26 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     }
 
     return nextLayout;
-  }, [data, theme, sceneFraming]);
+  }, [data, theme, sceneFraming, showAxes]);
+
+  // Modo líneas: oculta el sólido extruido de las barras (Mesh3d, legendgroup
+  // "sec_*" en plotly_engine.py) y deja solo su eje (Scatter3d "Eje · ...").
+  // Los símbolos de apoyo (legendgroup "sup_*") nunca se ocultan — son
+  // justamente lo que este modo existe para poder ver sin que la sección
+  // sólida de la barra los tape o los empequeñezca.
+  const displayTraces = useMemo(() => {
+    if (!Array.isArray(data?.data)) return data?.data;
+    if (renderMode === "solid") return data.data;
+    return data.data.map((trace: any) => {
+      if (trace.type === "mesh3d" && typeof trace.legendgroup === "string" && trace.legendgroup.startsWith("sec_")) {
+        return { ...trace, visible: false };
+      }
+      if (trace.type === "scatter3d" && typeof trace.name === "string" && trace.name.startsWith("Eje ")) {
+        return { ...trace, opacity: 1, line: { ...trace.line, width: 5 } };
+      }
+      return trace;
+    });
+  }, [data, renderMode]);
 
 
   const toggleFullscreen = () => {
@@ -254,19 +295,33 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   };
 
   const resetView = () => {
-    if (plotRef.current && plotRef.current.el && data?.layout?.scene?.camera) {
+    const initialCamera = themeAwareLayout?.scene?.camera ?? data?.layout?.scene?.camera;
+    if (plotRef.current && plotRef.current.el && initialCamera) {
       const plotlyLib = plotlyApi ?? (window as any).Plotly;
       if (plotlyLib) {
         plotlyLib.relayout(plotRef.current.el, {
-          "scene.camera": data.layout.scene.camera,
+          "scene.camera": initialCamera,
         });
+        axisTriadRef.current?.updateCamera(initialCamera);
       }
     }
   };
 
   const handlePlotClick = useCallback((event: any) => {
+    const point = event?.points?.[0];
+    if (!point) return;
+    const customdata = point.customdata;
+    const traceName = String(point?.data?.name ?? point?.fullData?.name ?? "");
+
+    if (onNodeSelect && (traceName === "Nodos" || traceName === "Nodos de medición")) {
+      const nodeId = traceName === "Nodos de medición"
+        ? Number(Array.isArray(customdata) ? customdata[9] : customdata)
+        : Number(nodeIds[Number(point.pointNumber)]);
+      if (Number.isInteger(nodeId) && nodeId > 0) onNodeSelect(nodeId);
+      return;
+    }
+
     if (!onElementSelect) return;
-    const customdata = event?.points?.[0]?.customdata;
     const rawElementId = Array.isArray(customdata)
       ? customdata[6]
       : customdata;
@@ -274,23 +329,70 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     if (Number.isInteger(elementId) && elementId > 0) {
       onElementSelect(elementId);
     }
-  }, [onElementSelect]);
+  }, [nodeIds, onElementSelect, onNodeSelect]);
 
-  const bindPlotEvents = useCallback((_figure: any, graphDiv: any) => {
-    const previous = clickBindingRef.current;
+  const syncAxisCamera = useCallback((camera: PlotlyCamera | null | undefined) => {
+    if (!camera) return;
+    pendingAxisCameraRef.current = camera;
+    if (axisCameraFrameRef.current !== null) return;
+
+    // Plotly emite muchos `plotly_relayouting` por segundo durante el giro. Se
+    // conserva siempre la cámara más reciente y React pinta como máximo una vez
+    // por frame, evitando trabajo duplicado sin introducir retraso perceptible.
+    axisCameraFrameRef.current = requestAnimationFrame(() => {
+      axisCameraFrameRef.current = null;
+      const nextCamera = pendingAxisCameraRef.current;
+      if (!nextCamera) return;
+      axisTriadRef.current?.updateCamera(nextCamera);
+    });
+  }, []);
+
+  const bindPlotEvents = useCallback((figure: any, graphDiv: any) => {
+    const previous = plotBindingRef.current;
     if (previous) {
-      previous.graphDiv?.removeListener?.("plotly_click", previous.handler);
-      clickBindingRef.current = null;
+      if (previous.clickHandler) {
+        previous.graphDiv?.removeListener?.("plotly_click", previous.clickHandler);
+      }
+      previous.graphDiv?.removeListener?.("plotly_relayouting", previous.cameraHandler);
+      previous.graphDiv?.removeListener?.("plotly_relayout", previous.cameraHandler);
+      plotBindingRef.current = null;
     }
-    if (onElementSelect && graphDiv?.on) {
+
+    const cameraHandler = (event?: any) => {
+      // Durante el arrastre `_fullLayout.scene.camera` todavía contiene la
+      // cámara anterior. El evento sí trae la cámara viva de cada movimiento.
+      syncAxisCamera(
+        event?.["scene.camera"]
+        ?? graphDiv?._fullLayout?.scene?._scene?.getCamera?.()
+        ?? graphDiv?._fullLayout?.scene?.camera,
+      );
+    };
+
+    if ((onElementSelect || onNodeSelect) && graphDiv?.on) {
       graphDiv.on("plotly_click", handlePlotClick);
-      clickBindingRef.current = { graphDiv, handler: handlePlotClick };
     }
-  }, [handlePlotClick, onElementSelect]);
+    if (graphDiv?.on && graphDiv?._fullLayout?.scene) {
+      graphDiv.on("plotly_relayouting", cameraHandler);
+      graphDiv.on("plotly_relayout", cameraHandler);
+      plotBindingRef.current = {
+        graphDiv,
+        clickHandler: onElementSelect || onNodeSelect ? handlePlotClick : undefined,
+        cameraHandler,
+      };
+      syncAxisCamera(graphDiv._fullLayout.scene.camera ?? figure?.layout?.scene?.camera);
+    }
+  }, [handlePlotClick, onElementSelect, onNodeSelect, syncAxisCamera]);
 
   useEffect(() => () => {
-    const binding = clickBindingRef.current;
-    binding?.graphDiv?.removeListener?.("plotly_click", binding.handler);
+    if (axisCameraFrameRef.current !== null) {
+      cancelAnimationFrame(axisCameraFrameRef.current);
+    }
+    const binding = plotBindingRef.current;
+    if (binding?.clickHandler) {
+      binding.graphDiv?.removeListener?.("plotly_click", binding.clickHandler);
+    }
+    binding?.graphDiv?.removeListener?.("plotly_relayouting", binding.cameraHandler);
+    binding?.graphDiv?.removeListener?.("plotly_relayout", binding.cameraHandler);
   }, []);
 
   useEffect(() => {
@@ -584,6 +686,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   return (
     <div
       ref={containerRef}
+      data-graphics-view
       // Sin esto, un arrastre de un dedo sobre el canvas gl3d lo interpreta el navegador
       // como scroll/pan de la página en touch, y el gesto de orbit de Plotly nunca lo recibe
       // completo (se corta a medio camino cuando la página se mueve debajo).
@@ -591,8 +694,29 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       className={`relative group bg-white dark:bg-bg-dark transition-all duration-500 ${isFullscreen ? "w-screen h-screen fixed inset-0 z-[100]" : className || "h-[600px] rounded-[2.5rem]"}`}
     >
       <div
-        className={`absolute bottom-8 left-8 z-10 flex gap-3 transition-all duration-500 ${isFullscreen ? "opacity-100" : "opacity-0 translate-y-4 group-hover:opacity-100 group-hover:translate-y-0"}`}
+        className={`absolute bottom-8 left-8 z-30 flex gap-3 transition-all duration-500 ${isFullscreen ? "opacity-100" : "opacity-0 translate-y-4 group-hover:opacity-100 group-hover:translate-y-0"}`}
       >
+        <button
+          onClick={() => setShowAxisTriad(!showAxisTriad)}
+          className={`p-3 backdrop-blur-md rounded-xl shadow-2xl border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer ${showAxisTriad ? "bg-white/80 dark:bg-bg-dark-panel/80 text-gray-600 dark:text-gray-300 hover:text-unsaac-red" : "bg-unsaac-red/90 text-white"}`}
+          title={showAxisTriad ? "Ocultar indicador XYZ" : "Mostrar indicador XYZ"}
+        >
+          <Axis3d size={18} />
+        </button>
+        <button
+          onClick={() => setShowAxes(!showAxes)}
+          className={`p-3 backdrop-blur-md rounded-xl shadow-2xl border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer ${showAxes ? "bg-white/80 dark:bg-bg-dark-panel/80 text-gray-600 dark:text-gray-300 hover:text-unsaac-red" : "bg-unsaac-red/90 text-white"}`}
+          title={showAxes ? "Ocultar ejes" : "Mostrar ejes"}
+        >
+          <Grid3x3 size={18} />
+        </button>
+        <button
+          onClick={() => setRenderMode(renderMode === "solid" ? "wireframe" : "solid")}
+          className="p-3 bg-white/80 dark:bg-bg-dark-panel/80 backdrop-blur-md text-gray-600 dark:text-gray-300 rounded-xl shadow-2xl hover:text-unsaac-red border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer"
+          title={renderMode === "solid" ? "Ver en líneas" : "Ver en 3D sólido"}
+        >
+          {renderMode === "solid" ? <Waypoints size={18} /> : <Box size={18} />}
+        </button>
         <button
           onClick={resetView}
           className="p-3 bg-white/80 dark:bg-bg-dark-panel/80 backdrop-blur-md text-gray-600 dark:text-gray-300 rounded-xl shadow-2xl hover:text-unsaac-red border border-border-light dark:border-border-dark transition-all active:scale-90 cursor-pointer"
@@ -619,7 +743,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       {PlotComponent ? (
         <PlotComponent
           ref={plotRef}
-          data={data.data}
+          data={displayTraces}
           layout={themeAwareLayout}
           frames={animation?.enabled ? undefined : data.frames}
           onInitialized={bindPlotEvents}
@@ -639,6 +763,15 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
         <div className="flex items-center justify-center h-full">
           <div className="text-gray-400 text-sm">Cargando librería gráfica...</div>
         </div>
+      )}
+
+      {data?.layout?.scene && (
+        <AxisTriad
+          ref={axisTriadRef}
+          camera={themeAwareLayout?.scene?.camera ?? data.layout.scene.camera}
+          containerRef={containerRef}
+          visible={showAxisTriad}
+        />
       )}
 
       {!isFullscreen && (

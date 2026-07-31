@@ -148,33 +148,60 @@ const ModalAnalysisView: React.FC = () => {
     if (analysisData.frequencies?.length > 0) {
       if (structure.nodes?.length > 0 && analysisData.mode_shapes) {
         const coords = structure.nodes.map((n: any) => n.coords);
-        const size =
-          Math.max(
-            Math.max(...coords.map((c: any) => c[0])) -
-              Math.min(...coords.map((c: any) => c[0])),
-            Math.max(...coords.map((c: any) => c[1])) -
-              Math.min(...coords.map((c: any) => c[1])),
-            Math.max(...coords.map((c: any) => c[2])) -
-              Math.min(...coords.map((c: any) => c[2])),
-          ) || 1.0;
+        const spans = [0, 1, 2].map((axis) => {
+          const values = coords.map((coord: any) => Number(coord[axis]) || 0);
+          return Math.max(...values) - Math.min(...values);
+        });
+        const globalSpan = Math.max(...spans, 1e-9);
+        const maxDisplacementByAxis = [0, 0, 0];
 
-        let maxDisp = 0;
-        Object.values(analysisData.mode_shapes).forEach((shapes: any) => {
-          const d = shapes[0];
-          if (d) {
-            const mag = Math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2);
-            maxDisp = Math.max(maxDisp, mag);
-          }
+        Object.values(analysisData.mode_shapes).forEach((nodeShapes: any) => {
+          const vectors = Array.isArray(nodeShapes?.[0])
+            ? nodeShapes
+            : Array.isArray(nodeShapes)
+              ? [nodeShapes]
+              : Object.values(nodeShapes ?? {});
+          vectors.forEach((displacement: any) => {
+            if (!Array.isArray(displacement)) return;
+            for (let axis = 0; axis < 3; axis++) {
+              maxDisplacementByAxis[axis] = Math.max(
+                maxDisplacementByAxis[axis],
+                Math.abs(Number(displacement[axis]) || 0),
+              );
+            }
+          });
         });
 
-        if (maxDisp > 0) {
-          optimalScale = (size * 0.15) / maxDisp;
-          const order = Math.pow(10, Math.floor(Math.log10(optimalScale)));
+        // Un único límite basado en el largo hacía que un puente angosto pudiera
+        // desplazarse cientos de milímetros en Y/Z y colapsar visualmente. Cada
+        // componente se limita ahora al 10% de SU dimensión original. Para una
+        // dimensión plana (span≈0) se usa una pequeña fracción del largo global,
+        // suficiente para ver el modo sin inventar una geometría desproporcionada.
+        const MAX_AXIS_DEFORMATION_RATIO = 1.00;
+        const SCALE_STEPS = 10;
+        const safeScaleCandidates = maxDisplacementByAxis.flatMap((maxDisplacement, axis) => {
+          if (maxDisplacement <= 1e-12) return [];
+          const referenceSpan = spans[axis] > globalSpan * 1e-6
+            ? spans[axis]
+            : globalSpan * 0.08;
+          return [(referenceSpan * MAX_AXIS_DEFORMATION_RATIO) / maxDisplacement];
+        });
+        const safeMaxScale = safeScaleCandidates.length > 0
+          ? Math.min(...safeScaleCandidates)
+          : scale;
+
+        if (Number.isFinite(safeMaxScale) && safeMaxScale > 0) {
+          optimalScale = safeMaxScale * 0.5;
           setScaleRange({
             min: 0,
-            max: optimalScale * 2.5,
-            step: order / 20,
+            max: safeMaxScale,
+            // Diez posiciones útiles: cada avance se aprecia de inmediato,
+            // pero el máximo sigue protegido por el límite geométrico.
+            step: Math.max(safeMaxScale / SCALE_STEPS, 1e-9),
           });
+        } else {
+          optimalScale = 1;
+          setScaleRange({ min: 0, max: 1, step: 0.01 });
         }
       }
 

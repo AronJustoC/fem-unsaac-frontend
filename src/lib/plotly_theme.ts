@@ -6,7 +6,7 @@ export const getPlotlyTheme = (theme: PlotlyAppTheme) => {
   return {
     isDark,
     paperBackground: isDark ? "#111827" : "#FFFFFF",
-    plotBackground: isDark ? "#0B0F1A" : "#F8FAFC",
+    plotBackground: isDark ? "#0B0F1A" : "#FFFFFF",
     text: isDark ? "#E5E7EB" : "#0F172A",
     mutedText: isDark ? "#94A3B8" : "#475569",
     subtleText: isDark ? "#9CA3AF" : "#64748B",

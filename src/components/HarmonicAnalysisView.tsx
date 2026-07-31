@@ -8,8 +8,10 @@ import {
   AlertTriangle,
   BarChart3,
   ChevronRight,
+  FileSpreadsheet,
   Gauge,
   Loader2,
+  MapPinned,
   Play,
   SlidersHorizontal,
   Waves,
@@ -69,8 +71,13 @@ type UnbalancedDirection = {
   z: number;
 };
 
+type UnbalancedPlane = "direction" | "xy" | "xz" | "yz";
+
 const palette = ["#3B82F6", "#10B981", "#DAA520", "#EF4444", "#8B0000", "#8B5CF6"];
 const MAX_ALL_NODE_TRACES = 120;
+// Puntos de medición definidos en la tesis (Fig. 5.18 y Tablas 5.8–5.9),
+// conservando el orden Punto 1 ... Punto 8.
+const THESIS_MEASUREMENT_NODE_IDS = [21, 102, 31, 112, 41, 122, 51, 132];
 
 const metricOptions: { key: MetricKey; label: string; axis: string; unit: string }[] = [
   { key: "displacement_m", label: "Desp", axis: "Desplazamiento |u| (mm)", unit: "mm" },
@@ -147,6 +154,13 @@ const getAvailableNodeIds = (structure: any): string[] => {
     .filter((nodeId: number) => Number.isFinite(nodeId))
     .sort((a: number, b: number) => a - b)
     .map((nodeId: number) => String(nodeId));
+};
+
+const getThesisMeasurementNodeIds = (nodeIds: Array<string | number>): number[] => {
+  const available = new Set(nodeIds.map(Number));
+  return THESIS_MEASUREMENT_NODE_IDS.every((nodeId) => available.has(nodeId))
+    ? [...THESIS_MEASUREMENT_NODE_IDS]
+    : [];
 };
 
 const directionNorm = (direction: UnbalancedDirection) =>
@@ -337,6 +351,8 @@ const recolorByMetric = (
   results: HarmonicResults | null,
   activeMetric: MetricKey,
   frequencyIndex: number,
+  measurementNodeIds: number[],
+  visualScale: number,
 ) => {
   if (!vizData?.data || !results) return vizData;
   const metric = metricConfig(activeMetric);
@@ -436,7 +452,61 @@ const recolorByMetric = (
     };
   });
 
-  return { ...vizData, data: finalized };
+  if (measurementNodeIds.length === 0) return { ...vizData, data: finalized };
+
+  const nodeById = new Map(
+    (Array.isArray(structure?.nodes) ? structure.nodes : []).map((node: any) => [
+      Number(node?.id),
+      Array.isArray(node?.coords) ? node.coords.map(Number) : [0, 0, 0],
+    ]),
+  );
+  const measurementCustomData = measurementNodeIds
+    .map((nodeId) => {
+      const coords = nodeById.get(nodeId);
+      if (!coords) return null;
+      // La estructura y la respuesta vienen en SI (m), pero todo el motor Plotly
+      // dibuja coordenadas y deltas en mm (process_nodes/interpolate_beam del
+      // backend). Estos son puntos GEOMÉTRICOS de instrumentación sobre los
+      // extremos de las vigas H: no deben heredar la deformación amplificada del
+      // resultado armónico, porque entonces flotan sobre el cordón superior.
+      return [
+        Number(coords[0] ?? 0) * 1_000,
+        Number(coords[1] ?? 0) * 1_000,
+        Number(coords[2] ?? 0) * 1_000,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        nodeId,
+      ];
+    })
+    .filter((row): row is number[] => Array.isArray(row));
+
+  if (measurementCustomData.length === 0) return { ...vizData, data: finalized };
+
+  const selectedTrace = {
+    type: "scatter3d",
+    mode: "markers",
+    name: "Nodos de medición",
+    x: measurementCustomData.map((row) => row[0] + row[3] * visualScale),
+    y: measurementCustomData.map((row) => row[1] + row[4] * visualScale),
+    z: measurementCustomData.map((row) => row[2] + row[5] * visualScale),
+    customdata: measurementCustomData,
+    text: measurementCustomData.map((row, index) => `P${index + 1} · Nodo ${row[9]}`),
+    marker: {
+      size: 10,
+      color: "#d600ff",
+      symbol: "square",
+      opacity: 1,
+      line: { color: "#4a044e", width: 2 },
+    },
+    hovertemplate: "<b>%{text}</b><br>Click para quitar<extra></extra>",
+    showlegend: true,
+  };
+
+  return { ...vizData, data: [...finalized, selectedTrace] };
 };
 
 // 14% del vano principal repartido sobre el peor desplazamiento de TODO el
@@ -475,12 +545,13 @@ const HarmonicAnalysisView: React.FC = () => {
   const [freqStart, setFreqStart] = useState(0.5);
   const [freqEnd, setFreqEnd] = useState(80);
   const [numPoints, setNumPoints] = useState(160);
-  const [dampingPercent, setDampingPercent] = useState(2);
+  const [dampingPercent, setDampingPercent] = useState(4);
   const [isUnbalanced, setIsUnbalanced] = useState(false);
   const [unbalancedNodeId, setUnbalancedNodeId] = useState("");
-  const [unbalancedMass, setUnbalancedMass] = useState(1);
-  const [unbalancedEccentricity, setUnbalancedEccentricity] = useState(0.01);
+  const [unbalancedMass, setUnbalancedMass] = useState(0.029);
+  const [unbalancedEccentricity, setUnbalancedEccentricity] = useState(0.0508);
   const [unbalancedDirection, setUnbalancedDirection] = useState<UnbalancedDirection>({ x: 0, y: 1, z: 0 });
+  const [unbalancedPlane, setUnbalancedPlane] = useState<UnbalancedPlane>("yz");
   const [useLogScale, setUseLogScale] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState("all");
   const [activeMetric, setActiveMetric] = useState<MetricKey>("displacement_m");
@@ -493,6 +564,7 @@ const HarmonicAnalysisView: React.FC = () => {
   const [selectedElementId, setSelectedElementId] = useState<number | null>(null);
   const [bdMatrixOpen, setBdMatrixOpen] = useState(false);
   const [globalMatrixOpen, setGlobalMatrixOpen] = useState(false);
+  const [measurementNodeIds, setMeasurementNodeIds] = useState<number[]>([]);
   const { theme } = useTheme();
 
   const availableNodeIds = useMemo(() => getAvailableNodeIds(structure), [structure]);
@@ -513,8 +585,16 @@ const HarmonicAnalysisView: React.FC = () => {
   // Reescala en el cliente el viz base (pedido siempre con scale=1.0 y cacheado
   // por frecuencia): mover el slider de escala no vuelve a pegarle al backend.
   const motionData = useMemo(
-    () => recolorByMetric(applyClientScaling(motionVizBase, visualScale), structure, results, activeMetric, selectedFrequencyIndex),
-    [motionVizBase, visualScale, structure, results, activeMetric, selectedFrequencyIndex],
+    () => recolorByMetric(
+      applyClientScaling(motionVizBase, visualScale),
+      structure,
+      results,
+      activeMetric,
+      selectedFrequencyIndex,
+      measurementNodeIds,
+      visualScale,
+    ),
+    [motionVizBase, visualScale, structure, results, activeMetric, selectedFrequencyIndex, measurementNodeIds],
   );
   const activePlotData = visualMode === "motion" ? motionData : chartData;
 
@@ -542,6 +622,13 @@ const HarmonicAnalysisView: React.FC = () => {
         );
       }
       setStructure(parsed);
+      const validNodeIds = new Set(getAvailableNodeIds(parsed).map(Number));
+      setMeasurementNodeIds((current) => {
+        const validCurrent = current.filter((nodeId) => validNodeIds.has(nodeId));
+        return validCurrent.length > 0
+          ? validCurrent
+          : getThesisMeasurementNodeIds(Array.from(validNodeIds));
+      });
       setResults(null);
       setError(null);
     } catch (parseError) {
@@ -571,7 +658,7 @@ const HarmonicAnalysisView: React.FC = () => {
     const frequencyHz = results.frequencies_sweep?.[selectedFrequencyIndex];
     if (!Number.isFinite(frequencyHz)) return;
 
-    const baseCacheKey = `${hashString(JSON.stringify(structure))}:${freqStart}:${freqEnd}:${numPoints}:${dampingPercent}:${isUnbalanced}:${unbalancedMe}:${unbalancedNodeId}:${JSON.stringify(unbalancedDirection)}:${frequencyHz.toFixed(6)}:${theme}`;
+    const baseCacheKey = `${hashString(JSON.stringify(structure))}:${freqStart}:${freqEnd}:${numPoints}:${dampingPercent}:${isUnbalanced}:${unbalancedMe}:${unbalancedNodeId}:${unbalancedPlane}:${JSON.stringify(unbalancedDirection)}:${frequencyHz.toFixed(6)}:${theme}`;
 
     const cached = motionVizCache.current.get(baseCacheKey);
     if (cached) {
@@ -597,6 +684,7 @@ const HarmonicAnalysisView: React.FC = () => {
           unbalanced_direction: isUnbalanced
             ? [unbalancedDirection.x, unbalancedDirection.y, unbalancedDirection.z]
             : [0, 1, 0],
+          unbalanced_plane: isUnbalanced ? unbalancedPlane : "direction",
           unbalanced_mass: isUnbalanced ? unbalancedMass : 0,
           unbalanced_eccentricity: isUnbalanced ? unbalancedEccentricity : 0,
         }),
@@ -614,7 +702,7 @@ const HarmonicAnalysisView: React.FC = () => {
   }, [
     results, structure, visualMode, selectedFrequencyIndex, theme,
     freqStart, freqEnd, numPoints, dampingPercent, isUnbalanced,
-    unbalancedMe, unbalancedNodeId, unbalancedDirection, unbalancedMass, unbalancedEccentricity,
+    unbalancedMe, unbalancedNodeId, unbalancedPlane, unbalancedDirection, unbalancedMass, unbalancedEccentricity,
   ]);
 
   useEffect(() => {
@@ -623,7 +711,7 @@ const HarmonicAnalysisView: React.FC = () => {
       return;
     }
     if (!availableNodeIds.includes(unbalancedNodeId)) {
-      setUnbalancedNodeId(availableNodeIds[0]);
+      setUnbalancedNodeId(availableNodeIds.includes("163") ? "163" : availableNodeIds[0]);
     }
   }, [availableNodeIds, unbalancedNodeId]);
 
@@ -651,7 +739,7 @@ const HarmonicAnalysisView: React.FC = () => {
         setError("La excentricidad e debe ser mayor que cero.");
         return;
       }
-      if (directionNorm(unbalancedDirection) <= 1e-12) {
+      if (unbalancedPlane === "direction" && directionNorm(unbalancedDirection) <= 1e-12) {
         setError("La dirección del desbalance no puede ser [0, 0, 0].");
         return;
       }
@@ -684,6 +772,7 @@ const HarmonicAnalysisView: React.FC = () => {
           unbalanced_direction: isUnbalanced
             ? [unbalancedDirection.x, unbalancedDirection.y, unbalancedDirection.z]
             : [0, 1, 0],
+          unbalanced_plane: isUnbalanced ? unbalancedPlane : "direction",
           unbalanced_mass: isUnbalanced ? unbalancedMass : 0,
           unbalanced_eccentricity: isUnbalanced ? unbalancedEccentricity : 0,
         }),
@@ -698,6 +787,14 @@ const HarmonicAnalysisView: React.FC = () => {
       setResults(analysisData);
       setVisualScale(computeAutoScale(structure, analysisData));
       const peaks = getNodePeaks(analysisData);
+      setMeasurementNodeIds((current) => {
+        const valid = current.filter((nodeId) => availableNodeIds.includes(String(nodeId)));
+        if (valid.length > 0) return valid;
+        const thesisNodes = getThesisMeasurementNodeIds(availableNodeIds);
+        return thesisNodes.length > 0
+          ? thesisNodes
+          : peaks.slice(0, 8).map((peak) => Number(peak.nodeId));
+      });
       setSelectedNodeId(peaks[0]?.nodeId ?? "all");
       const peakFreq = Number(peaks[0]?.frequency ?? analysisData.peak_frequency ?? analysisData.frequencies_sweep?.[0] ?? 0);
       const peakIndex = (analysisData.frequencies_sweep || []).reduce((best, freq, idx, arr) =>
@@ -779,9 +876,10 @@ const HarmonicAnalysisView: React.FC = () => {
             </div>
             <div className="premium-card-inner p-2 lg:p-3">
               <label className="text-[7px] lg:text-[9px] font-bold text-gray-500 uppercase tracking-wider font-mono">
-                Damping %
+                Amortiguamiento %
               </label>
               <input
+                aria-label="Amortiguamiento estructural (%)"
                 type="number"
                 min="0"
                 max="100"
@@ -833,6 +931,7 @@ const HarmonicAnalysisView: React.FC = () => {
                       m (kg)
                     </label>
                     <input
+                      aria-label="Masa desbalanceada m (kg)"
                       type="number"
                       min="0"
                       step="0.001"
@@ -846,6 +945,7 @@ const HarmonicAnalysisView: React.FC = () => {
                       e (m)
                     </label>
                     <input
+                      aria-label="Excentricidad e (m)"
                       type="number"
                       min="0"
                       step="0.0001"
@@ -858,26 +958,44 @@ const HarmonicAnalysisView: React.FC = () => {
 
                 <div>
                   <label className="text-[7px] lg:text-[9px] font-bold text-gray-500 uppercase tracking-wider font-mono">
-                    Dirección [x, y, z]
+                    Plano de giro
                   </label>
-                  <div className="mt-1 grid grid-cols-3 gap-2">
-                    {(["x", "y", "z"] as const).map((axis) => (
-                      <input
-                        key={axis}
-                        aria-label={`Dirección ${axis.toUpperCase()}`}
-                        type="number"
-                        step="0.1"
-                        value={unbalancedDirection[axis]}
-                        onChange={(event) =>
-                          setUnbalancedDirection((current) => ({
-                            ...current,
-                            [axis]: Number(event.target.value),
-                          }))
-                        }
-                        className="w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-accent-secondary focus:outline-none"
-                      />
-                    ))}
-                  </div>
+                  <select
+                    aria-label="Plano de giro de la masa"
+                    value={unbalancedPlane}
+                    onChange={(event) => setUnbalancedPlane(event.target.value as UnbalancedPlane)}
+                    className="mt-1 w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-accent-secondary focus:outline-none"
+                  >
+                    <option value="yz">Y–Z · eje del rotor X</option>
+                    <option value="xz">X–Z · eje del rotor Y</option>
+                    <option value="xy">X–Y · eje del rotor Z</option>
+                    <option value="direction">Dirección lineal fija</option>
+                  </select>
+                  {unbalancedPlane === "yz" && (
+                    <p className="mt-1 text-[7px] font-mono leading-relaxed text-gray-400">
+                      Fy = m·e·ω²·cos(ωt) · Fz = m·e·ω²·sin(ωt)
+                    </p>
+                  )}
+                  {unbalancedPlane === "direction" && (
+                    <div className="mt-1 grid grid-cols-3 gap-2">
+                      {(["x", "y", "z"] as const).map((axis) => (
+                        <input
+                          key={axis}
+                          aria-label={`Dirección ${axis.toUpperCase()}`}
+                          type="number"
+                          step="0.1"
+                          value={unbalancedDirection[axis]}
+                          onChange={(event) =>
+                            setUnbalancedDirection((current) => ({
+                              ...current,
+                              [axis]: Number(event.target.value),
+                            }))
+                          }
+                          className="w-full px-2 py-1 text-xs font-mono font-bold bg-white dark:bg-bg-dark rounded-lg border border-border-light dark:border-border-dark text-accent-secondary focus:outline-none"
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="text-[8px] font-mono font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
@@ -977,11 +1095,17 @@ const HarmonicAnalysisView: React.FC = () => {
                   className="mt-2 flex w-full cursor-pointer items-center justify-between gap-2 rounded-xl border border-cyan-400/20 bg-cyan-500/5 px-3 py-2 text-cyan-700 transition-all hover:bg-cyan-500/10 dark:text-cyan-300"
                 >
                   <span className="flex items-center gap-2 text-[8px] lg:text-[9px] font-bold uppercase tracking-wider font-mono">
-                    <SlidersHorizontal size={12} />
-                    Tabla de nodos X/Y/Z
+                    <FileSpreadsheet size={12} />
+                    Medición por frecuencia
                   </span>
-                  <span className="text-[8px] font-mono font-black uppercase">Ver</span>
+                  <span className="text-[8px] font-mono font-black uppercase">
+                    {measurementNodeIds.length} nodos · Excel
+                  </span>
                 </button>
+                <p className="mt-1 flex items-center gap-1.5 text-[7px] font-mono leading-relaxed text-gray-400">
+                  <MapPinned size={10} className="shrink-0 text-fuchsia-500" />
+                  Selecciona varios nodos en la tabla o haz click sobre un nodo del modelo.
+                </p>
                 <button
                   type="button"
                   onClick={() => setBdMatrixOpen(true)}
@@ -1211,6 +1335,12 @@ const HarmonicAnalysisView: React.FC = () => {
             // práctica aunque las coordenadas sí cambien cuadro a cuadro.
             animation={{ enabled: visualMode === "motion" && !!motionData && animationEnabled, scale: visualScale, fps: 30, speedHz: 0.45 }}
             onElementSelect={results ? setSelectedElementId : undefined}
+            nodeIds={Array.isArray(structure?.nodes) ? structure.nodes.map((node: any) => Number(node?.id)) : []}
+            onNodeSelect={results ? (nodeId) => {
+              setMeasurementNodeIds((current) => current.includes(nodeId)
+                ? current.filter((id) => id !== nodeId)
+                : [...current, nodeId]);
+            } : undefined}
           />
         </div>
       </div>
@@ -1233,6 +1363,10 @@ const HarmonicAnalysisView: React.FC = () => {
           structure={structure}
           results={results}
           frequencyIndex={selectedFrequencyIndex}
+          selectedNodeIds={measurementNodeIds}
+          presetNodeIds={getThesisMeasurementNodeIds(availableNodeIds)}
+          onSelectedNodeIdsChange={setMeasurementNodeIds}
+          onFrequencyIndexChange={setSelectedFrequencyIndex}
           onClose={() => setNodeTableOpen(false)}
         />
       )}

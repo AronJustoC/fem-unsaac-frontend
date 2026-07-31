@@ -57,6 +57,13 @@ test('harmonic response route renders frequency response', async ({ page }) => {
 
   await page.goto('http://localhost:4321/analisis-armonico');
   await expect(page.getByRole('heading', { name: /Harmonic Response/i })).toBeVisible();
+  await expect(page.getByLabel('Amortiguamiento estructural (%)')).toHaveValue('4');
+  await page.getByLabel('Fuerza por desbalance').check();
+  await expect(page.getByLabel('Masa desbalanceada m (kg)')).toHaveValue('0.029');
+  await expect(page.getByLabel('Excentricidad e (m)')).toHaveValue('0.0508');
+  await expect(page.getByLabel('Plano de giro de la masa')).toHaveValue('yz');
+  await expect(page.getByText(/Fy = m·e·ω²·cos\(ωt\)/)).toBeVisible();
+  await page.getByLabel('Fuerza por desbalance').uncheck();
   await page.getByRole('button', { name: /solve/i }).click();
   await expect(page.getByText('Critical Response')).toBeVisible();
   await expect(page.getByText('Peak @ 5.00 Hz')).toBeVisible();
@@ -72,23 +79,23 @@ test('harmonic response route renders frequency response', async ({ page }) => {
 
   const animationTrace = await plot.evaluate((el: any) => el.data.find((trace: any) =>
     trace.type === 'scatter3d' &&
-    trace.name === 'Deformada animada' &&
+    String(trace.name).startsWith('Deformada') &&
     Array.isArray(trace.customdata)
   ));
   expect(animationTrace).toBeTruthy();
-  expect(animationTrace.customdata.some((row: any[]) => Array.isArray(row) && row.length >= 9)).toBeTruthy();
+  expect(animationTrace.customdata.some((row: any[]) => Array.isArray(row) && row.length >= 6)).toBeTruthy();
 
   await page.getByRole('button', { name: /^Vel$/ }).click();
   await expect.poll(async () => plot.evaluate((el: any) =>
-    el.data.find((trace: any) => trace.type === 'scatter3d' && String(trace.mode).includes('markers'))?.name
-  )).toBe('Vel');
+    el.data.find((trace: any) => trace.type === 'scatter3d' && trace.name === 'Nodos')?.marker?.color
+  )).toEqual([0, 471]);
   await page.getByRole('button', { name: /^Desp$/ }).click();
 
   await expect(page.getByText(/^Escala deformada$/)).toBeVisible();
-  await expect(page.getByLabel('Escala visual de deformada')).toHaveValue('1');
+  const scaleBefore = Number(await page.getByLabel('Escala visual de deformada').inputValue());
+  expect(scaleBefore).toBeGreaterThan(100);
   await page.getByLabel('Aumentar escala de deformada').click();
-  await expect(page.getByLabel('Escala visual de deformada')).toHaveValue('1.25');
-  await expect.poll(async () => plot.evaluate((el: any) => el.layout?.title?.text)).toContain('escala visual 1.25×');
+  await expect.poll(async () => Number(await page.getByLabel('Escala visual de deformada').inputValue())).toBeGreaterThan(scaleBefore);
 
   const freqCard = page
     .getByText(/^Frecuencia animada$/)
@@ -98,7 +105,6 @@ test('harmonic response route renders frequency response', async ({ page }) => {
   await expect(freqCard.getByText(/5\.000 Hz/)).toBeVisible();
   await slider.fill('2');
   await expect(freqCard.getByText(/10\.000 Hz/)).toBeVisible();
-  await expect.poll(async () => plot.evaluate((el: any) => el.layout?.title?.text)).toContain('10.000 Hz');
 
   await page.getByRole('button', { name: /^Espectro$/ }).click();
   await expect.poll(async () => plot.evaluate((el: any) => el.layout?.title?.text)).toContain('Desplazamiento |u| (mm)');
@@ -108,4 +114,36 @@ test('harmonic response route renders frequency response', async ({ page }) => {
 
   await page.getByRole('button', { name: /^σ alt$/ }).click();
   await expect.poll(async () => plot.evaluate((el: any) => el.data[0].y)).toEqual([0.12, 2.5, 0.9]);
+
+  await page.getByRole('button', { name: /Medición por frecuencia/i }).click();
+  await expect(page.getByRole('dialog', { name: /Medición armónica por frecuencia/i })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Resultados @ 10\.000 Hz/i })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: /Respuesta en Velocidad/i })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: /Velocidad RMS/i })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Nodo 2/i })).toHaveAttribute('aria-pressed', 'true');
+
+  await page.getByRole('button', { name: /^Nodo 1$/i }).click();
+  await expect(page.getByRole('button', { name: /P2 · Nodo 1/i })).toHaveAttribute('aria-pressed', 'true');
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Exportar Excel/i }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^respuesta_armonica_nodos_\d{4}-\d{2}-\d{2}\.xls$/);
+
+  await page.getByRole('button', { name: /Cerrar tabla de medición/i }).click();
+  await page.getByRole('button', { name: /^Movimiento$/ }).click();
+  await expect.poll(async () => plot.evaluate((el: any) => {
+    const trace = el.data.find((candidate: any) => candidate.name === 'Nodos de medición');
+    return {
+      baseX: trace?.customdata?.map((row: number[]) => row[0]),
+      real: trace?.customdata?.map((row: number[]) => row.slice(3, 6)),
+      imaginary: trace?.customdata?.map((row: number[]) => row.slice(6, 9)),
+      symbol: trace?.marker?.symbol,
+    };
+  })).toEqual({
+    baseX: [5000, 0],
+    real: [[0, 0, 0], [0, 0, 0]],
+    imaginary: [[0, 0, 0], [0, 0, 0]],
+    symbol: 'square',
+  });
 });

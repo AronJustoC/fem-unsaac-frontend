@@ -74,6 +74,30 @@ test('harmonic response route renders frequency response', async ({ page }) => {
   await expect(page.getByText(/Unidades industriales: desplazamiento mm/i)).toBeVisible();
 
   const plot = page.locator('.js-plotly-plot').first();
+  const readSceneFraming = () => plot.evaluate((el: any) => {
+    // WebGL puede devolver diferencias IEEE-754 irrelevantes después de relayout
+    // (p. ej. 0.3 vs 0.30000000000000004).
+    const round = (value: number) => Number(Number(value).toFixed(9));
+    const vector = (value: any) => ({ x: round(value.x), y: round(value.y), z: round(value.z) });
+    return {
+      xRange: el._fullLayout?.scene?.xaxis?.range.map(round),
+      yRange: el._fullLayout?.scene?.yaxis?.range.map(round),
+      zRange: el._fullLayout?.scene?.zaxis?.range.map(round),
+      aspectratio: vector(el._fullLayout?.scene?.aspectratio),
+      eye: vector(el._fullLayout?.scene?.camera?.eye),
+    };
+  });
+  await expect.poll(async () => plot.evaluate((el: any) => ({
+    aspectmode: el._fullLayout?.scene?.aspectmode,
+    projection: el._fullLayout?.scene?.camera?.projection?.type,
+    eye: el._fullLayout?.scene?.camera?.eye,
+  }))).toEqual({
+    aspectmode: 'manual',
+    projection: 'orthographic',
+    // La referencia sin deformar mide 5 m solo en X. La respuesta amplificada
+    // en Y no debe reorientar la cámara ni alterar la proporción aparente.
+    eye: { x: 0.45, y: 0.855, z: 0.855 },
+  });
   await expect(page.getByRole('button', { name: /^Movimiento$/ })).toBeVisible();
   await expect(page.getByText(/Frecuencia animada/i)).toBeVisible();
 
@@ -87,7 +111,7 @@ test('harmonic response route renders frequency response', async ({ page }) => {
 
   await page.getByRole('button', { name: /^Vel$/ }).click();
   await expect.poll(async () => plot.evaluate((el: any) =>
-    el.data.find((trace: any) => trace.type === 'scatter3d' && trace.name === 'Nodos')?.marker?.color
+    el.data.find((trace: any) => trace.type === 'scatter3d' && trace.name === 'Nodos deformados')?.marker?.color
   )).toEqual([0, 471]);
   await page.getByRole('button', { name: /^Desp$/ }).click();
 
@@ -97,17 +121,56 @@ test('harmonic response route renders frequency response', async ({ page }) => {
   await page.getByLabel('Aumentar escala de deformada').click();
   await expect.poll(async () => Number(await page.getByLabel('Escala visual de deformada').inputValue())).toBeGreaterThan(scaleBefore);
 
+  // Zoom REAL con la rueda (no un relayout programático) antes de cambiar
+  // etiquetas/frecuencia. Esa cámara debe sobrevivir a cualquier render.
+  const eyeBeforeManualZoom = await plot.evaluate((el: any) => el._fullLayout?.scene?.camera?.eye);
+  await plot.hover({ position: { x: 420, y: 320 } });
+  await page.mouse.wheel(0, -650);
+  await expect.poll(async () => plot.evaluate((el: any) => el._fullLayout?.scene?.camera?.eye))
+    .not.toEqual(eyeBeforeManualZoom);
+
+  const lockedFraming = await readSceneFraming();
+
+  await page.getByRole('button', { name: /Etiquetas en puntos de medición/i }).click();
+  await expect.poll(readSceneFraming).toEqual(lockedFraming);
+
   const freqCard = page
     .getByText(/^Frecuencia animada$/)
     .locator('xpath=ancestor::div[contains(@class,"premium-card-inner")][1]');
   const slider = freqCard.locator('input[type="range"]');
   await expect(slider).toHaveValue('1');
   await expect(freqCard.getByText(/5\.000 Hz/)).toBeVisible();
+  const frequencyVizResponse = page.waitForResponse((response) =>
+    response.url().includes('/api/visualization/harmonic-results')
+      && response.url().includes('frequency_hz=10')
+      && response.ok()
+  );
   await slider.fill('2');
+  await frequencyVizResponse;
   await expect(freqCard.getByText(/10\.000 Hz/)).toBeVisible();
+  await expect.poll(readSceneFraming).toEqual(lockedFraming);
+
+  // Simula quitar la última "Deformada" desde la leyenda. El encuadre manual
+  // debe permanecer byte a byte igual aunque ya no haya respuesta visible.
+  await plot.evaluate(async (el: any) => {
+    const traceIndex = el.data.findIndex((trace: any) => String(trace.name).startsWith('Deformada'));
+    await (window as any).Plotly.restyle(el, { visible: 'legendonly' }, [traceIndex]);
+  });
+  await expect.poll(readSceneFraming).toEqual(lockedFraming);
 
   await page.getByRole('button', { name: /^Espectro$/ }).click();
   await expect.poll(async () => plot.evaluate((el: any) => el.layout?.title?.text)).toContain('Desplazamiento |u| (mm)');
+
+  // Todo el panel lateral debe ser una única región desplazable. Antes, solo
+  // la lista final de picos tenía overflow y los controles inferiores quedaban
+  // recortados cuando la configuración superior ocupaba más que el viewport.
+  const harmonicSidebar = page.getByRole('complementary', { name: /Controles de respuesta armónica/i });
+  await expect.poll(async () => harmonicSidebar.evaluate((element) =>
+    element.scrollHeight > element.clientHeight
+  )).toBe(true);
+  await harmonicSidebar.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
+  await expect.poll(async () => harmonicSidebar.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(page.getByText(/^Escala logarítmica$/i)).toBeVisible();
 
   await page.getByRole('button', { name: /^Vel$/ }).click();
   await expect.poll(async () => plot.evaluate((el: any) => el.data[0].y)).toEqual([6, 471, 251]);
@@ -135,15 +198,15 @@ test('harmonic response route renders frequency response', async ({ page }) => {
   await expect.poll(async () => plot.evaluate((el: any) => {
     const trace = el.data.find((candidate: any) => candidate.name === 'Nodos de medición');
     return {
-      baseX: trace?.customdata?.map((row: number[]) => row[0]),
-      real: trace?.customdata?.map((row: number[]) => row.slice(3, 6)),
-      imaginary: trace?.customdata?.map((row: number[]) => row.slice(6, 9)),
-      symbol: trace?.marker?.symbol,
+      type: trace?.type,
+      nodeIds: [...new Set(trace?.customdata ?? [])],
+      vertexCount: trace?.x?.length,
+      triangleCount: trace?.i?.length,
     };
   })).toEqual({
-    baseX: [5000, 0],
-    real: [[0, 0, 0], [0, 0, 0]],
-    imaginary: [[0, 0, 0], [0, 0, 0]],
-    symbol: 'square',
+    type: 'mesh3d',
+    nodeIds: [2, 1],
+    vertexCount: 16,
+    triangleCount: 24,
   });
 });

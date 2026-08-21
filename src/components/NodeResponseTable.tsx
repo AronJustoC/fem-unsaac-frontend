@@ -29,7 +29,7 @@ interface NodeResponseTableProps {
   onClose: () => void;
 }
 
-const RMS_FACTOR = 1 / Math.SQRT2;
+export const RMS_FACTOR = 1 / Math.SQRT2;
 const PKPK_FACTOR = 2;
 
 const unitOptions: Record<Quantity, { key: string; label: string; factor: number }[]> = {
@@ -78,7 +78,7 @@ const formatValue = (value: number) => {
 type AxisAmplitude = { x: number; y: number; z: number; total: number };
 type StressBreakdown = { normal: number; shear: number; sigma1: number; sigma2: number; tauMax: number; vm: number };
 
-type NodeRow = {
+export type NodeRow = {
   nodeId: number;
   displacement: AxisAmplitude;
   velocity: AxisAmplitude;
@@ -92,7 +92,7 @@ const getNodeIds = (structure: any): number[] =>
     .filter((id: number) => Number.isFinite(id))
     .sort((a: number, b: number) => a - b);
 
-const buildNodeRows = (structure: any, results: any, frequencyIndex: number): NodeRow[] => {
+export const buildNodeRows = (structure: any, results: any, frequencyIndex: number): NodeRow[] => {
   const omega = 2 * Math.PI * Number(results?.frequencies_sweep?.[frequencyIndex] ?? 0);
 
   return getNodeIds(structure).map((nodeId: number) => {

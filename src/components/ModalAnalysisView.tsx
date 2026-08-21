@@ -19,6 +19,10 @@ import { useTheme } from "./ThemeContext";
 import { authenticatedFetch } from "../lib/api";
 import { downloadTablePng } from "../lib/matrixImage";
 import { useFitScale } from "../lib/useFitScale";
+import {
+  buildAnimatedTraceCoordinates,
+  hasDisplacementEncoding,
+} from "../lib/plotly_deformation";
 
 const hashString = (value: string) => {
   let hash = 2166136261;
@@ -303,32 +307,13 @@ const ModalAnalysisView: React.FC = () => {
       ...vizData,
       frames: undefined,
       data: vizData.data.map((trace: any) => {
-        if (!trace.customdata || !String(trace.mode ?? "").includes("lines")) {
+        if (!hasDisplacementEncoding(trace)) {
           return trace;
         }
-
-        const n = trace.customdata.length;
-        const newX = new Array(n);
-        const newY = new Array(n);
-        const newZ = new Array(n);
-
-        for (let i = 0; i < n; i++) {
-          const row = trace.customdata[i];
-          if (!row || row[0] === null) {
-            newX[i] = null;
-            newY[i] = null;
-            newZ[i] = null;
-          } else {
-            newX[i] = row[0] + row[3] * scale;
-            newY[i] = row[1] + row[4] * scale;
-            newZ[i] = row[2] + row[5] * scale;
-          }
-        }
+        const coordinates = buildAnimatedTraceCoordinates(trace, 1, 0, scale);
         return {
           ...trace,
-          x: newX,
-          y: newY,
-          z: newZ,
+          ...coordinates,
         };
       }),
     };
@@ -408,6 +393,7 @@ const ModalAnalysisView: React.FC = () => {
       y: customdata.map((row: number[]) => row[1] + row[4] * scale),
       z: customdata.map((row: number[]) => row[2] + row[5] * scale),
       customdata,
+      meta: { displacementEncoding: "base-delta-real" },
       line: { color: "#F59E0B", width: 11 },
       marker: {
         color: "#FCD34D",
@@ -421,6 +407,40 @@ const ModalAnalysisView: React.FC = () => {
 
     return { ...vizData, data: [...vizData.data, selectedTrace] };
   }, [vizData, selectedElementId, structure, results, selectedMode, scale]);
+
+  // Un único encuadre para todos los modos: geometría original + la envolvente
+  // máxima de TODOS los vectores modales a la escala visual activa. Así cambiar
+  // de modo modifica la deformada, no la relación X/Y/Z ni el tamaño de la caja.
+  const sceneReferenceBounds = useMemo(() => {
+    const nodes = Array.isArray(structure?.nodes) ? structure.nodes : [];
+    if (nodes.length === 0) return undefined;
+
+    const min = [Infinity, Infinity, Infinity] as [number, number, number];
+    const max = [-Infinity, -Infinity, -Infinity] as [number, number, number];
+    const padding = [0, 0, 0] as [number, number, number];
+
+    for (const node of nodes) {
+      const coords = Array.isArray(node?.coords) ? node.coords : [];
+      for (let axis = 0; axis < 3; axis++) {
+        const valueMm = Number(coords[axis]) * 1_000;
+        if (!Number.isFinite(valueMm)) continue;
+        min[axis] = Math.min(min[axis], valueMm);
+        max[axis] = Math.max(max[axis], valueMm);
+      }
+
+      const rawShapes = results?.mode_shapes?.[node?.id] ?? results?.mode_shapes?.[String(node?.id)];
+      const modeShapes = Array.isArray(rawShapes?.[0]) ? rawShapes : Array.isArray(rawShapes) ? [rawShapes] : [];
+      for (const displacement of modeShapes) {
+        for (let axis = 0; axis < 3; axis++) {
+          const excursionMm = Math.abs(Number(displacement?.[axis]) || 0) * Math.abs(scale) * 1_000;
+          if (Number.isFinite(excursionMm)) padding[axis] = Math.max(padding[axis], excursionMm);
+        }
+      }
+    }
+
+    if (!min.every(Number.isFinite) || !max.every(Number.isFinite)) return undefined;
+    return { min, max, padding };
+  }, [structure, results, scale]);
 
   const activeMatrix = matrixKind === "transformation"
     ? buildTransformationMatrix(elementMatrices?.local_axes)
@@ -655,6 +675,7 @@ const ModalAnalysisView: React.FC = () => {
               fps: 24,
               speedHz: 0.65,
             }}
+            sceneReferenceBounds={sceneReferenceBounds}
           />
 
           {selectedElementId && (

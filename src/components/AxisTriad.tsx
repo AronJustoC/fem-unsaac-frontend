@@ -11,12 +11,20 @@ export interface PlotlyCamera {
   eye?: Partial<Vector3>;
   center?: Partial<Vector3>;
   up?: Partial<Vector3>;
+  projection?: { type?: "perspective" | "orthographic" };
 }
 
 interface Vector3 {
   x: number;
   y: number;
   z: number;
+}
+
+interface CompletePlotlyCamera {
+  eye: Vector3;
+  center: Vector3;
+  up: Vector3;
+  projection: { type: "perspective" | "orthographic" };
 }
 
 interface Position {
@@ -35,10 +43,11 @@ export interface AxisTriadHandle {
 }
 
 const DEFAULT_POSITION: Position = { x: 0.1, y: 0.82 };
-const DEFAULT_CAMERA: Required<PlotlyCamera> = {
+const DEFAULT_CAMERA: CompletePlotlyCamera = {
   eye: { x: 1.25, y: 1.25, z: 1.25 },
   center: { x: 0, y: 0, z: 0 },
   up: { x: 0, y: 0, z: 1 },
+  projection: { type: "perspective" },
 };
 const GIZMO_SIZE = 116;
 const ORIGIN = GIZMO_SIZE / 2;

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import GraphicsView from "./GraphicsView";
 import ImpedanceMatrixInspector from "./ImpedanceMatrixInspector";
-import NodeResponseTable from "./NodeResponseTable";
+import NodeResponseTable, { buildNodeRows, RMS_FACTOR } from "./NodeResponseTable";
 import BDMatrixInspector from "./BDMatrixInspector";
 import {
   Activity,
@@ -21,6 +21,10 @@ import { useTheme } from "./ThemeContext";
 import { authenticatedFetch } from "../lib/api";
 import { getPlotlyTheme } from "../lib/plotly_theme";
 import GlobalMatrixInspector from "./GlobalMatrixInspector";
+import {
+  buildAnimatedTraceCoordinates,
+  hasDisplacementEncoding,
+} from "../lib/plotly_deformation";
 
 const hashString = (value: string) => {
   let hash = 2166136261;
@@ -74,10 +78,82 @@ type UnbalancedDirection = {
 type UnbalancedPlane = "direction" | "xy" | "xz" | "yz";
 
 const palette = ["#3B82F6", "#10B981", "#DAA520", "#EF4444", "#8B0000", "#8B5CF6"];
+
+// Scatter3d con symbol "square" es un sprite 2D siempre de cara a cámara: no
+// hay forma de que Plotly lo sombree como un cubo real. Para el look de la
+// Fig. 5.18 (cubo sólido con caras sombreadas) hace falta geometría propia
+// vía Mesh3d — 8 vértices + 12 triángulos por punto, con customdata repetido
+// por vértice para que el click (GraphicsView) siga leyendo fila completa.
+const CUBE_FACES: [number, number, number][] = [
+  [0, 1, 2], [0, 2, 3], // abajo
+  [4, 6, 5], [4, 7, 6], // arriba
+  [0, 5, 1], [0, 4, 5], // frente
+  [1, 6, 2], [1, 5, 6], // derecha
+  [2, 7, 3], [2, 6, 7], // atrás
+  [3, 4, 0], [3, 7, 4], // izquierda
+];
+const CUBE_OFFSETS: [number, number, number][] = [
+  [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+  [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
+];
+
+const buildCubeMeshTrace = (
+  points: number[][],
+  halfSize: number,
+  color: string,
+  name: string,
+  hoverTemplate: string,
+) => {
+  const x: number[] = [];
+  const y: number[] = [];
+  const z: number[] = [];
+  const i: number[] = [];
+  const j: number[] = [];
+  const k: number[] = [];
+  // customdata por vértice es el nodeId PELADO (no la fila completa) a propósito:
+  // el loop de animación en GraphicsView (buildScaledCoordinates) trata como
+  // "animatedTrace" cualquier trace cuyo customdata sea un array de filas con
+  // length >= 6 — si acá se repite la fila completa (10 campos), este mesh
+  // entra en ese loop, Plotly le hace restyle de x/y/z cada frame y el cubo
+  // termina parpadeando/desapareciendo. El click-to-remove (GraphicsView línea
+  // ~317) ya soporta customdata plano vía su rama `else Number(customdata)`.
+  const customdata: number[] = [];
+  const text: string[] = [];
+
+  points.forEach((row, pointIndex) => {
+    const base = x.length;
+    CUBE_OFFSETS.forEach(([ox, oy, oz]) => {
+      x.push(row[0] + ox * halfSize);
+      y.push(row[1] + oy * halfSize);
+      z.push(row[2] + oz * halfSize);
+      customdata.push(row[9]);
+      text.push(`P${pointIndex + 1} · Nodo ${row[9]}`);
+    });
+    CUBE_FACES.forEach(([a, b, c]) => {
+      i.push(base + a);
+      j.push(base + b);
+      k.push(base + c);
+    });
+  });
+
+  return {
+    type: "mesh3d",
+    x, y, z, i, j, k,
+    customdata,
+    text,
+    color,
+    flatshading: true,
+    lighting: { ambient: 0.55, diffuse: 0.75, specular: 0.4, roughness: 0.4, fresnel: 0.1 },
+    lightposition: { x: 200, y: 200, z: 400 },
+    hovertemplate: hoverTemplate,
+    name,
+    showlegend: true,
+  };
+};
 const MAX_ALL_NODE_TRACES = 120;
 // Puntos de medición definidos en la tesis (Fig. 5.18 y Tablas 5.8–5.9),
 // conservando el orden Punto 1 ... Punto 8.
-const THESIS_MEASUREMENT_NODE_IDS = [21, 102, 31, 112, 41, 122, 51, 132];
+const THESIS_MEASUREMENT_NODE_IDS = [31, 112, 41, 122];
 
 const metricOptions: { key: MetricKey; label: string; axis: string; unit: string }[] = [
   { key: "displacement_m", label: "Desp", axis: "Desplazamiento |u| (mm)", unit: "mm" },
@@ -314,22 +390,8 @@ const applyClientScaling = (vizData: any, scale: number) => {
     ...vizData,
     frames: undefined,
     data: vizData.data.map((trace: any) => {
-      if (!trace.customdata || !String(trace.mode ?? "").includes("lines")) return trace;
-      const n = trace.customdata.length;
-      const newX = new Array(n);
-      const newY = new Array(n);
-      const newZ = new Array(n);
-      for (let i = 0; i < n; i++) {
-        const row = trace.customdata[i];
-        if (!row || row[0] === null) {
-          newX[i] = null; newY[i] = null; newZ[i] = null;
-        } else {
-          newX[i] = row[0] + row[3] * scale;
-          newY[i] = row[1] + row[4] * scale;
-          newZ[i] = row[2] + row[5] * scale;
-        }
-      }
-      return { ...trace, x: newX, y: newY, z: newZ };
+      if (!hasDisplacementEncoding(trace)) return trace;
+      return { ...trace, ...buildAnimatedTraceCoordinates(trace, 1, 0, scale) };
     }),
   };
 };
@@ -345,6 +407,71 @@ const applyClientScaling = (vizData: any, scale: number) => {
 // - Marcador "Nodos": por nodo (node_response_series), SIEMPRE (las 4 pestañas) —
 //   para que los nodos críticos salten a la vista en rojo, no solo la línea.
 // La geometría/curvatura no se toca, solo el color.
+// Etiquetas al estilo Fig. 5.18 de la tesis, pero con la piel de la app
+// (font-mono técnico, mayúsculas, paleta premium-card-inner) en vez de la
+// caja gris genérica de Plotly. Reusa buildNodeRows de NodeResponseTable —
+// misma cuenta que ya usa la tabla de medición, no se reinventa el cálculo.
+const FONT_MONO = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+
+const buildLabelAnnotations = (
+  structure: any,
+  results: HarmonicResults | null,
+  frequencyIndex: number,
+  activeMetric: MetricKey,
+  points: number[][],
+  cubeHalfSize: number,
+  theme: "dark" | "light",
+): any[] => {
+  if (!results) return [];
+  const rows = buildNodeRows(structure, results, frequencyIndex);
+  const rowById = new Map(rows.map((row) => [row.nodeId, row]));
+
+  const isDark = theme === "dark";
+  const bgcolor = isDark ? "rgba(17,24,39,0.94)" : "rgba(255,255,255,0.95)";
+  const bordercolor = isDark ? "rgba(255,255,255,0.12)" : "rgba(226,232,240,1)";
+  const headerColor = isDark ? "#e879f9" : "#a21caf";
+  const bodyColor = isDark ? "#F9FAFB" : "#111827";
+
+  return points
+    .map((point, index) => {
+      const row = rowById.get(point[9]);
+      if (!row) return null;
+
+      const header = `<b><span style="color:${headerColor}">PUNTO ${index + 1}</span></b>`;
+      let text: string;
+      if (activeMetric === "stress_pa") {
+        text = `${header}<br>σ VM: ${(row.stress.vm / 1_000_000).toFixed(2)} MPA`;
+      } else {
+        const axisKey = activeMetric === "displacement_m" ? "displacement" : activeMetric === "velocity_m_s" ? "velocity" : "acceleration";
+        const axis = row[axisKey];
+        const factor = activeMetric === "displacement_m" ? 1_000 : activeMetric === "velocity_m_s" ? 1_000 * RMS_FACTOR : 1;
+        const label = activeMetric === "displacement_m" ? "U" : activeMetric === "velocity_m_s" ? "VRMS" : "A";
+        const unit = activeMetric === "displacement_m" ? "MM" : activeMetric === "velocity_m_s" ? "MM/S" : "M/S²";
+        text = `${header}<br>${label} (${unit}):<br>Y: ${(axis.y * factor).toFixed(2)}<br>Z: ${(axis.z * factor).toFixed(2)}`;
+      }
+
+      return {
+        x: point[0],
+        y: point[1],
+        z: point[2],
+        text,
+        showarrow: true,
+        arrowhead: 0,
+        arrowwidth: 1,
+        arrowcolor: isDark ? "rgba(232,121,249,0.5)" : "rgba(162,28,175,0.4)",
+        xanchor: "left",
+        ax: cubeHalfSize * 1.8,
+        ay: -cubeHalfSize * 1.8,
+        bgcolor,
+        bordercolor,
+        borderpad: 5,
+        font: { color: bodyColor, size: 9, family: FONT_MONO },
+        align: "left",
+      };
+    })
+    .filter((annotation): annotation is NonNullable<typeof annotation> => annotation !== null);
+};
+
 const recolorByMetric = (
   vizData: any,
   structure: any,
@@ -353,6 +480,9 @@ const recolorByMetric = (
   frequencyIndex: number,
   measurementNodeIds: number[],
   visualScale: number,
+  unbalancedNodeId: number | null,
+  showLabels: boolean,
+  theme: "dark" | "light",
 ) => {
   if (!vizData?.data || !results) return vizData;
   const metric = metricConfig(activeMetric);
@@ -433,11 +563,17 @@ const recolorByMetric = (
   const nodeCmax = nodeMax > nodeMin ? nodeMax : nodeMin + 1e-6;
 
   const finalized = withLineScale.map((trace: any) => {
-    if (trace.type !== "scatter3d" || trace.name !== "Nodos" || !Number.isFinite(nodeMin) || nodeValues.length !== (trace.x?.length ?? -1)) {
+    // La figura contiene dos capas nodales: `Nodos` es la referencia original
+    // fantasma y `Nodos · Deformación` acompaña a la deformada. Recolorear la
+    // primera la volvía opaca y dejaba puntos "flotando" fuera de las barras.
+    if (trace.type !== "scatter3d" || trace.name !== "Nodos · Deformación" || !Number.isFinite(nodeMin) || nodeValues.length !== (trace.x?.length ?? -1)) {
       return trace;
     }
     return {
       ...trace,
+      name: "Nodos deformados",
+      showlegend: true,
+      legendgroup: "harmonic-deformed-nodes",
       marker: {
         ...trace.marker,
         size: 10,
@@ -448,18 +584,52 @@ const recolorByMetric = (
         opacity: 1,
         line: { color: "rgba(15,23,42,0.85)", width: 1.5 },
       },
-      hovertext: nodeIds.map((nodeId, i) => `<b>Nodo ${nodeId}</b><br>${metric.label}: ${nodeValues[i].toFixed(3)} ${metric.unit}`),
+      text: nodeIds.map((nodeId, i) => `<b>Nodo ${nodeId}</b><br>${metric.label}: ${nodeValues[i].toFixed(3)} ${metric.unit}`),
+      hovertemplate: "%{text}<extra></extra>",
     };
   });
 
-  if (measurementNodeIds.length === 0) return { ...vizData, data: finalized };
-
-  const nodeById = new Map(
-    (Array.isArray(structure?.nodes) ? structure.nodes : []).map((node: any) => [
+  const nodeById = new Map<number, number[]>(
+    (Array.isArray(structure?.nodes) ? structure.nodes : []).map((node: any): [number, number[]] => [
       Number(node?.id),
       Array.isArray(node?.coords) ? node.coords.map(Number) : [0, 0, 0],
     ]),
   );
+
+  const motorCoords = unbalancedNodeId != null ? nodeById.get(unbalancedNodeId) : null;
+  const motorTrace = motorCoords
+    ? [{
+        type: "scatter3d",
+        mode: "markers",
+        name: "Masa",
+        x: [Number(motorCoords[0] ?? 0) * 1_000],
+        y: [Number(motorCoords[1] ?? 0) * 1_000],
+        z: [Number(motorCoords[2] ?? 0) * 1_000],
+        text: [`Masa del motor · Nodo ${unbalancedNodeId}`],
+        marker: { size: 12, color: "#0a0a0a", symbol: "circle", opacity: 1 },
+        hovertemplate: "<b>%{text}</b><extra></extra>",
+        showlegend: true,
+      }]
+    : [];
+
+  // Tamaño de cubo proporcional a la estructura (1.2% del span mayor), no fijo:
+  // secciones chicas (80x40mm) quedan igual de chicas en distintos modelos.
+  const allCoords = nodeById.size > 0 ? Array.from(nodeById.values()) : [];
+  const spanOfAxis = (axis: number) => {
+    const values = allCoords.map((c) => c[axis] ?? 0);
+    return values.length ? Math.max(...values) - Math.min(...values) : 0;
+  };
+  const structureSpanMm = Math.max(spanOfAxis(0), spanOfAxis(1), spanOfAxis(2), 1e-6) * 1_000;
+  const cubeHalfSize = Math.min(Math.max(structureSpanMm * 0.012, 15), 80);
+
+  const withAnnotations = (data: any[], annotations: any[]) => ({
+    ...vizData,
+    data,
+    layout: { ...vizData.layout, scene: { ...vizData.layout?.scene, annotations } },
+  });
+
+  if (measurementNodeIds.length === 0) return withAnnotations([...finalized, ...motorTrace], []);
+
   const measurementCustomData = measurementNodeIds
     .map((nodeId) => {
       const coords = nodeById.get(nodeId);
@@ -484,29 +654,21 @@ const recolorByMetric = (
     })
     .filter((row): row is number[] => Array.isArray(row));
 
-  if (measurementCustomData.length === 0) return { ...vizData, data: finalized };
+  if (measurementCustomData.length === 0) return withAnnotations([...finalized, ...motorTrace], []);
 
-  const selectedTrace = {
-    type: "scatter3d",
-    mode: "markers",
-    name: "Nodos de medición",
-    x: measurementCustomData.map((row) => row[0] + row[3] * visualScale),
-    y: measurementCustomData.map((row) => row[1] + row[4] * visualScale),
-    z: measurementCustomData.map((row) => row[2] + row[5] * visualScale),
-    customdata: measurementCustomData,
-    text: measurementCustomData.map((row, index) => `P${index + 1} · Nodo ${row[9]}`),
-    marker: {
-      size: 10,
-      color: "#d600ff",
-      symbol: "square",
-      opacity: 1,
-      line: { color: "#4a044e", width: 2 },
-    },
-    hovertemplate: "<b>%{text}</b><br>Click para quitar<extra></extra>",
-    showlegend: true,
-  };
+  const cubeTrace = buildCubeMeshTrace(
+    measurementCustomData,
+    cubeHalfSize,
+    "#d600ff",
+    "Nodos de medición",
+    "<b>%{text}</b><br>Click para quitar<extra></extra>",
+  );
 
-  return { ...vizData, data: [...finalized, selectedTrace] };
+  const annotations = showLabels
+    ? buildLabelAnnotations(structure, results, frequencyIndex, activeMetric, measurementCustomData, cubeHalfSize, theme)
+    : [];
+
+  return withAnnotations([...finalized, cubeTrace, ...motorTrace], annotations);
 };
 
 // 14% del vano principal repartido sobre el peor desplazamiento de TODO el
@@ -565,6 +727,7 @@ const HarmonicAnalysisView: React.FC = () => {
   const [bdMatrixOpen, setBdMatrixOpen] = useState(false);
   const [globalMatrixOpen, setGlobalMatrixOpen] = useState(false);
   const [measurementNodeIds, setMeasurementNodeIds] = useState<number[]>([]);
+  const [showPointLabels, setShowPointLabels] = useState(false);
   const { theme } = useTheme();
 
   const availableNodeIds = useMemo(() => getAvailableNodeIds(structure), [structure]);
@@ -572,6 +735,52 @@ const HarmonicAnalysisView: React.FC = () => {
   const globalPeak = nodePeaks[0] ?? null;
   const unbalancedMe = unbalancedMass * unbalancedEccentricity;
   const selectedFrequency = results?.frequencies_sweep?.[selectedFrequencyIndex] ?? null;
+  // Referencia INMUTABLE de la geometría original (el motor Plotly trabaja en
+  // mm). GraphicsView la usa para fijar la orientación de cámara durante todo
+  // el barrido; la deformada de una frecuencia nunca decide la relación visual
+  // alto/ancho del modelo.
+  const sceneReferenceBounds = useMemo(() => {
+    const nodes = Array.isArray(structure?.nodes) ? structure.nodes : [];
+    if (nodes.length === 0) return undefined;
+    const min = [Infinity, Infinity, Infinity] as [number, number, number];
+    const max = [-Infinity, -Infinity, -Infinity] as [number, number, number];
+    for (const node of nodes) {
+      const coords = Array.isArray(node?.coords) ? node.coords : [];
+      for (let axis = 0; axis < 3; axis++) {
+        const valueMm = Number(coords[axis]) * 1_000;
+        if (!Number.isFinite(valueMm)) continue;
+        min[axis] = Math.min(min[axis], valueMm);
+        max[axis] = Math.max(max[axis], valueMm);
+      }
+    }
+    if (!min.every(Number.isFinite) || !max.every(Number.isFinite)) return undefined;
+
+    // Excursión máxima COMPLETA del barrido, no la frecuencia elegida. Mantener
+    // este padding fijo evita que los rangos cambien al mover el slider o al
+    // ocultar/mostrar las trazas "Deformada" en la leyenda.
+    const padding = [0, 0, 0] as [number, number, number];
+    const componentKeys = [
+      ["ux_real_m", "ux_imag_m"],
+      ["uy_real_m", "uy_imag_m"],
+      ["uz_real_m", "uz_imag_m"],
+    ] as const;
+    for (const components of Object.values(results?.node_displacement_components ?? {})) {
+      componentKeys.forEach(([realKey, imagKey], axis) => {
+        const real = (components as HarmonicNodeComponents)[realKey] ?? [];
+        const imaginary = (components as HarmonicNodeComponents)[imagKey] ?? [];
+        const count = Math.max(real.length, imaginary.length);
+        for (let index = 0; index < count; index++) {
+          const amplitudeMm = Math.hypot(
+            Number(real[index] ?? 0),
+            Number(imaginary[index] ?? 0),
+          ) * Math.abs(visualScale) * 1_000;
+          if (Number.isFinite(amplitudeMm)) padding[axis] = Math.max(padding[axis], amplitudeMm);
+        }
+      });
+    }
+
+    return { min, max, padding };
+  }, [structure, results, visualScale]);
   // Escala que hace visible la deformada por default: 14% del vano principal de
   // la estructura repartido sobre el PEOR desplazamiento de TODO el barrido (no
   // solo la frecuencia actual, para que no salte al mover el slider de frecuencia).
@@ -593,8 +802,11 @@ const HarmonicAnalysisView: React.FC = () => {
       selectedFrequencyIndex,
       measurementNodeIds,
       visualScale,
+      isUnbalanced && unbalancedNodeId ? Number(unbalancedNodeId) : null,
+      showPointLabels,
+      theme === "dark" ? "dark" : "light",
     ),
-    [motionVizBase, visualScale, structure, results, activeMetric, selectedFrequencyIndex, measurementNodeIds],
+    [motionVizBase, visualScale, structure, results, activeMetric, selectedFrequencyIndex, measurementNodeIds, isUnbalanced, unbalancedNodeId, showPointLabels, theme],
   );
   const activePlotData = visualMode === "motion" ? motionData : chartData;
 
@@ -813,7 +1025,10 @@ const HarmonicAnalysisView: React.FC = () => {
     <div className="h-full w-full overflow-hidden flex flex-col-reverse lg:flex-row font-sans relative bg-white dark:bg-bg-dark">
       <div className="fixed inset-0 bg-grid-pattern pointer-events-none opacity-20 z-0"></div>
 
-      <div className="relative z-40 w-full lg:w-[390px] xl:w-[440px] h-[52vh] lg:h-full flex flex-col bg-white/80 dark:bg-[#0B0F1A]/90 backdrop-blur-xl border-t lg:border-t-0 lg:border-r border-border-light dark:border-border-dark shrink-0 overflow-hidden">
+      <aside
+        aria-label="Controles de respuesta armónica"
+        className="relative z-40 w-full lg:w-[390px] xl:w-[440px] h-[52vh] lg:h-full flex flex-col bg-white/80 dark:bg-[#0B0F1A]/90 backdrop-blur-xl border-t lg:border-t-0 lg:border-r border-border-light dark:border-border-dark shrink-0 overflow-y-auto overflow-x-hidden overscroll-contain custom-scrollbar"
+      >
         <div className="shrink-0 p-3 lg:p-6 border-b border-border-light dark:border-border-dark">
           <div className="flex items-center justify-between gap-3 mb-3 lg:mb-5">
             <div className="min-w-0">
@@ -1016,9 +1231,29 @@ const HarmonicAnalysisView: React.FC = () => {
               ))}
             </div>
             {visualMode === "motion" && (
-              <p className="px-1 text-[7px] font-mono text-gray-400">
-                La vista 3D usa el mismo motor gráfico que Estático/Modal (curvatura y estilo), recoloreada según la pestaña elegida.
-              </p>
+              <>
+                <p className="px-1 text-[7px] font-mono text-gray-400">
+                  La vista 3D usa el mismo motor gráfico que Estático/Modal (curvatura y estilo), recoloreada según la pestaña elegida.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowPointLabels((prev) => !prev)}
+                  disabled={measurementNodeIds.length === 0}
+                  className={`premium-card-inner p-2 flex w-full items-center justify-between cursor-pointer transition-all disabled:cursor-not-allowed disabled:opacity-40 ${
+                    showPointLabels
+                      ? "border-fuchsia-400/40 bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-300"
+                      : "text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  <span className="flex items-center gap-2 text-[7px] lg:text-[9px] font-bold uppercase tracking-wider font-mono">
+                    <MapPinned size={12} />
+                    Etiquetas en puntos de medición
+                  </span>
+                  <span className="text-[8px] font-mono font-black uppercase">
+                    {showPointLabels ? `${metricConfig(activeMetric).label}` : "Ocultas"}
+                  </span>
+                </button>
+              </>
             )}
 
             <div className="premium-card-inner p-1 grid grid-cols-2 gap-1">
@@ -1249,7 +1484,7 @@ const HarmonicAnalysisView: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 lg:px-6 py-2 lg:py-4 pb-6 space-y-2 lg:space-y-3">
+        <div className="flex-none overflow-visible px-3 lg:px-6 py-2 lg:py-4 pb-6 space-y-2 lg:space-y-3">
           {nodePeaks.length > 0 ? (
             nodePeaks.map((peak) => (
               <button
@@ -1282,7 +1517,7 @@ const HarmonicAnalysisView: React.FC = () => {
             <EmptyState msg="Run harmonic sweep..." />
           )}
         </div>
-      </div>
+      </aside>
 
       <div className="relative z-10 flex-1 p-4 lg:p-8 flex flex-col overflow-hidden bg-white dark:bg-bg-dark h-[48vh] lg:h-full">
         <div className="bg-white/80 dark:bg-bg-dark-panel/90 backdrop-blur-md rounded-[2.5rem] border border-border-light dark:border-border-dark overflow-hidden shadow-2xl transition-all hover:border-unsaac-gold/30 group h-full relative">
@@ -1341,6 +1576,8 @@ const HarmonicAnalysisView: React.FC = () => {
                 ? current.filter((id) => id !== nodeId)
                 : [...current, nodeId]);
             } : undefined}
+            sceneReferenceBounds={sceneReferenceBounds}
+            sceneCameraZoom={0.45}
           />
         </div>
       </div>

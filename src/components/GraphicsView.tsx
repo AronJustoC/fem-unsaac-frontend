@@ -2,6 +2,12 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import { Maximize2, Minimize2, Download, Box, RotateCcw, Waypoints, Grid3x3, Axis3d } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { getPlotlyTheme } from "../lib/plotly_theme";
+import {
+  buildAnimatedTraceCoordinates,
+  hasComplexDisplacementEncoding,
+  hasDisplacementEncoding,
+  getTraceDisplacementRows,
+} from "../lib/plotly_deformation";
 import AxisTriad, {
   type AxisTriadHandle,
   type PlotlyCamera,
@@ -21,6 +27,20 @@ interface GraphicsViewProps {
   onElementSelect?: (elementId: number) => void;
   nodeIds?: number[];
   onNodeSelect?: (nodeId: number) => void;
+  /**
+   * Límites de la geometría SIN deformar, en las mismas unidades que Plotly.
+   * El encuadre puede crecer para no recortar la animación, pero la dirección
+   * de la cámara se calcula siempre con estos límites y no con la respuesta de
+   * la frecuencia actual.
+   */
+  sceneReferenceBounds?: {
+    min: [number, number, number];
+    max: [number, number, number];
+    /** Excursión máxima estable por eje (p. ej. todo el barrido armónico). */
+    padding?: [number, number, number];
+  };
+  /** Multiplicador uniforme de camera.eye; menor que 1 acerca sin deformar. */
+  sceneCameraZoom?: number;
 }
 
 const GraphicsView: React.FC<GraphicsViewProps> = ({
@@ -32,6 +52,8 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   onElementSelect,
   nodeIds = [],
   onNodeSelect,
+  sceneReferenceBounds,
+  sceneCameraZoom = 1,
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [renderMode, setRenderMode] = useState<"solid" | "wireframe">("solid");
@@ -40,6 +62,14 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const axisTriadRef = useRef<AxisTriadHandle>(null);
   const plotRef = useRef<any>(null);
+  // Cámara elegida por el usuario (giro/zoom/pan). Plotly la muta internamente,
+  // pero React no la conocía; en el siguiente cambio de frecuencia volvía a
+  // recibir la cámara inicial y deshacía el zoom manual.
+  const liveSceneCameraRef = useRef<PlotlyCamera | null>(null);
+  // En proyección ortográfica Plotly implementa la rueda modificando el
+  // aspectratio de la escena (uniformemente), no necesariamente camera.eye.
+  // Por eso hay que persistir ambos componentes de la vista.
+  const liveSceneAspectRatioRef = useRef<{ x: number; y: number; z: number } | null>(null);
   const pendingAxisCameraRef = useRef<PlotlyCamera | null>(null);
   const axisCameraFrameRef = useRef<number | null>(null);
   const plotBindingRef = useRef<{
@@ -83,7 +113,10 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   const sceneFraming = useMemo(() => {
     if (!data?.layout?.scene || !Array.isArray(data?.data)) return null;
 
-    const signature = `framing-v2:${animation?.enabled ? "animated" : "static"}:`
+    const referenceSignature = sceneReferenceBounds
+      ? `${sceneReferenceBounds.min.join(",")}:${sceneReferenceBounds.max.join(",")}`
+      : "auto";
+    const signature = `framing-v3:${referenceSignature}:${animation?.enabled ? "animated" : "static"}:`
       + data.data.map((t: any) => `${t.type}:${t.x?.length ?? 0}`).join("|");
     const deformationScale = animation?.enabled
       ? Math.abs(Number(animation.scale) || 0)
@@ -108,13 +141,15 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       // fuera de este cálculo — que corre una sola vez por `data`, no por frame. Sin
       // esto, el rango queda ajustado a la fase inicial nomás y la oscilación real
       // (que puede llegar más lejos en otra fase) se recorta contra el borde del eje.
-      // customdata ya trae la amplitud real/imag por eje (misma convención que usa
-      // el loop de animación): la excursión máxima en cualquier fase es hypot(re,im).
-      if (deformationScale > 0 && Array.isArray(trace?.customdata)) {
-        for (const row of trace.customdata) {
+      // Solo las trazas con contrato explícito aportan desplazamientos. En las
+      // complejas, la excursión máxima de cualquier fase es hypot(re, im).
+      if (deformationScale > 0 && hasDisplacementEncoding(trace)) {
+        const displacementRows = getTraceDisplacementRows(trace);
+        const isComplexDisplacement = hasComplexDisplacementEncoding(trace);
+        for (const row of displacementRows) {
           if (!Array.isArray(row) || row[0] === null || row[0] === undefined) continue;
           const [x, y, z] = row;
-          if (row.length >= 9) {
+          if (isComplexDisplacement && row.length >= 9) {
             const [, , , dxR, dyR, dzR, dxI, dyI, dzI] = row;
             grow(0, Number(x) - deformationScale * Math.hypot(dxR, dxI)); grow(0, Number(x) + deformationScale * Math.hypot(dxR, dxI));
             grow(1, Number(y) - deformationScale * Math.hypot(dyR, dyI)); grow(1, Number(y) + deformationScale * Math.hypot(dyR, dyI));
@@ -138,7 +173,17 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       }
       : { min: minCoords, max: maxCoords };
     sceneAccumRef.current = { signature, min: merged.min, max: merged.max };
-    const [minCoordsAcc, maxCoordsAcc] = [merged.min, merged.max];
+    const referencePadding = sceneReferenceBounds?.padding ?? [0, 0, 0];
+    // Con referencia explícita se bloquean TAMBIÉN los rangos. Dejar que Plotly
+    // los derive de las trazas visibles hacía que al ocultar la última deformada
+    // recalculara el aspect ratio y estirara el puente. El padding ya representa
+    // la excursión máxima de todo el barrido, por lo que no se recorta al animar.
+    const minCoordsAcc = sceneReferenceBounds
+      ? sceneReferenceBounds.min.map((value, index) => value - Math.max(0, referencePadding[index] ?? 0))
+      : merged.min;
+    const maxCoordsAcc = sceneReferenceBounds
+      ? sceneReferenceBounds.max.map((value, index) => value + Math.max(0, referencePadding[index] ?? 0))
+      : merged.max;
 
     const spans = minCoordsAcc.map((min, i) => Math.max(maxCoordsAcc[i] - min, 1e-6));
     const globalSpan = Math.max(...spans, 1);
@@ -153,22 +198,70 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       return [min - margin, maxCoordsAcc[i] + margin];
     });
 
-    // Ojo de camara adaptado a la relacion de aspecto real: ejes cortos retroceden
-    // mas (se ven desde afuera), el eje mas largo se acerca (con aspectmode='data'
-    // ya ocupa toda la escena; alejarse mas solo lo aplasta en diagonal). Misma
-    // formula que el backend usa para Editor/Estatico/Modal (_adaptive_camera_eye
-    // en visualization/plotly_engine.py) — unica logica de camara para todo el front.
-    const maxRangeSpan = Math.max(...spans);
+    // La RESPUESTA cambia con cada frecuencia y puede crecer mucho por la escala
+    // visual. Si usamos esos spans para orientar la cámara, el ojo cambia al mover
+    // el slider y la estructura parece ensancharse/achatarse aunque sus coordenadas
+    // base no hayan cambiado. Cuando existe geometría de referencia, la cámara se
+    // deriva exclusivamente de ella; los spans dinámicos se usan solo para ampliar
+    // los rangos y evitar recortes.
+    const referenceSpans = sceneReferenceBounds
+      ? sceneReferenceBounds.min.map((min, index) => Math.max(sceneReferenceBounds.max[index] - min, 1e-6))
+      : spans;
+    const maxRangeSpan = Math.max(...referenceSpans);
     const eyeComponent = (span: number) => {
       const ratio = span / maxRangeSpan;
       return Math.max(0.7, Math.min(1.9, 1.35 / (ratio + 0.35)));
     };
 
+    const rangeSpans = range.map(([start, end]) => Math.max(end - start, 1e-6));
+    const maxAspectSpan = Math.max(...rangeSpans);
+
+    const cameraZoom = Number.isFinite(sceneCameraZoom)
+      ? Math.max(0.35, Math.min(2.5, sceneCameraZoom))
+      : 1;
+
     return {
       range: { x: range[0], y: range[1], z: range[2] },
-      eye: { x: eyeComponent(spans[0]), y: eyeComponent(spans[1]), z: eyeComponent(spans[2]) },
+      // Al fijar rangos hay que fijar también la caja 3D con la MISMA relación;
+      // así una unidad mantiene idéntico tamaño en X/Y/Z incluso si se ocultan
+      // trazas desde la leyenda.
+      aspectRatio: sceneReferenceBounds
+        ? {
+          x: rangeSpans[0] / maxAspectSpan,
+          y: rangeSpans[1] / maxAspectSpan,
+          z: rangeSpans[2] / maxAspectSpan,
+        }
+        : null,
+      eye: {
+        // Un único factor para los tres ejes: acerca/aleja sin cambiar jamás
+        // la dirección de vista ni la relación alto/ancho.
+        x: eyeComponent(referenceSpans[0]) * cameraZoom,
+        y: eyeComponent(referenceSpans[1]) * cameraZoom,
+        z: eyeComponent(referenceSpans[2]) * cameraZoom,
+      },
     };
-  }, [data, animation?.enabled, animation?.scale]);
+  }, [data, animation?.enabled, animation?.scale, sceneReferenceBounds, sceneCameraZoom]);
+
+  const defaultSceneCamera = useMemo<PlotlyCamera | null>(() => {
+    if (!data?.layout?.scene) return null;
+    if (!sceneFraming) return data.layout.scene?.camera ?? null;
+    return {
+      eye: sceneFraming.eye,
+      up: { x: 0, y: 0, z: 1 },
+      center: { x: 0, y: 0, z: 0 },
+      projection: { type: "orthographic" },
+    };
+  }, [data?.layout?.scene, sceneFraming]);
+
+  // Una geometría distinta sí debe empezar con su encuadre predeterminado; los
+  // cambios de frecuencia/escala conservan la misma clave y por tanto la cámara.
+  const referenceGeometryKey = sceneReferenceBounds
+    ? `${sceneReferenceBounds.min.join(",")}:${sceneReferenceBounds.max.join(",")}`
+    : null;
+  useEffect(() => {
+    liveSceneCameraRef.current = null;
+    liveSceneAspectRatioRef.current = null;
+  }, [referenceGeometryKey]);
 
   const themeAwareLayout = useMemo(() => {
     if (!data?.layout) return null;
@@ -217,6 +310,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     });
 
     if (data.layout.scene) {
+      const activeAspectRatio = liveSceneAspectRatioRef.current ?? sceneFraming?.aspectRatio;
       // aspectmode/rango/camara: una sola logica para las 4 vistas (Editor, Estatico,
       // Modal, Armonico), calculada aca a partir de las coordenadas reales de los
       // trazos — no de lo que cada backend/builder haya puesto por su cuenta. Evita
@@ -228,21 +322,18 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
         xaxis: withAxisTheme({ ...data.layout.scene?.xaxis, range: sceneFraming?.range.x ?? data.layout.scene?.xaxis?.range, visible: showAxes }),
         yaxis: withAxisTheme({ ...data.layout.scene?.yaxis, range: sceneFraming?.range.y ?? data.layout.scene?.yaxis?.range, visible: showAxes }),
         zaxis: withAxisTheme({ ...data.layout.scene?.zaxis, range: sceneFraming?.range.z ?? data.layout.scene?.zaxis?.range, visible: showAxes }),
-        aspectmode: "data",
+        aspectmode: activeAspectRatio ? "manual" : "data",
+        ...(activeAspectRatio ? { aspectratio: activeAspectRatio } : {}),
         dragmode: "orbit",
-        camera: sceneFraming
-          ? {
-            eye: sceneFraming.eye,
-            up: { x: 0, y: 0, z: 1 },
-            center: { x: 0, y: 0, z: 0 },
-            projection: { type: "perspective" },
-          }
-          : data.layout.scene?.camera,
+        // Si el usuario ya giró o hizo zoom, esa cámara tiene prioridad sobre
+        // el encuadre inicial. Se conserva durante frecuencia, animación, tema y
+        // visibilidad de trazas.
+        camera: liveSceneCameraRef.current ?? defaultSceneCamera,
       };
     }
 
     return nextLayout;
-  }, [data, theme, sceneFraming, showAxes]);
+  }, [data, theme, sceneFraming, defaultSceneCamera, showAxes]);
 
   // Modo líneas: oculta el sólido extruido de las barras (Mesh3d, legendgroup
   // "sec_*" en plotly_engine.py) y deja solo su eje (Scatter3d "Eje · ...").
@@ -251,15 +342,39 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   // sólida de la barra los tape o los empequeñezca.
   const displayTraces = useMemo(() => {
     if (!Array.isArray(data?.data)) return data?.data;
-    if (renderMode === "solid") return data.data;
+    // Todas las secciones sólidas y sus ejes pertenecen a una sola capa lógica.
+    // Antes se ocultaban sus swatches individuales pero no existía ningún control
+    // global: al apagar todo lo visible en la leyenda, la estructura fantasma
+    // seguía dibujada. Se expone una sola entrada y se agrupan todas sus trazas.
+    let originalLegendAssigned = false;
     return data.data.map((trace: any) => {
-      if (trace.type === "mesh3d" && typeof trace.legendgroup === "string" && trace.legendgroup.startsWith("sec_")) {
-        return { ...trace, visible: false };
+      const isSectionMesh = trace.type === "mesh3d"
+        && typeof trace.legendgroup === "string"
+        && trace.legendgroup.startsWith("sec_");
+      const isElementAxis = trace.type === "scatter3d"
+        && typeof trace.name === "string"
+        && trace.name.startsWith("Eje ");
+
+      if (!isSectionMesh && !isElementAxis) return trace;
+
+      let nextTrace = trace;
+      if (renderMode === "wireframe" && isSectionMesh) {
+        nextTrace = { ...nextTrace, visible: false };
       }
-      if (trace.type === "scatter3d" && typeof trace.name === "string" && trace.name.startsWith("Eje ")) {
-        return { ...trace, opacity: 1, line: { ...trace.line, width: 5 } };
+      if (renderMode === "wireframe" && isElementAxis) {
+        nextTrace = { ...nextTrace, opacity: 1, line: { ...nextTrace.line, width: 5 } };
       }
-      return trace;
+
+      const canOwnLegend = renderMode === "solid" ? isSectionMesh : isElementAxis;
+      const showlegend = canOwnLegend && !originalLegendAssigned;
+      if (showlegend) originalLegendAssigned = true;
+
+      return {
+        ...nextTrace,
+        name: showlegend ? "Estructura original" : nextTrace.name,
+        legendgroup: "original-structure",
+        showlegend,
+      };
     });
   }, [data, renderMode]);
 
@@ -295,13 +410,19 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
   };
 
   const resetView = () => {
-    const initialCamera = themeAwareLayout?.scene?.camera ?? data?.layout?.scene?.camera;
+    const initialCamera = defaultSceneCamera ?? data?.layout?.scene?.camera;
     if (plotRef.current && plotRef.current.el && initialCamera) {
       const plotlyLib = plotlyApi ?? (window as any).Plotly;
       if (plotlyLib) {
-        plotlyLib.relayout(plotRef.current.el, {
+        liveSceneCameraRef.current = null;
+        liveSceneAspectRatioRef.current = null;
+        const resetLayout: Record<string, any> = {
           "scene.camera": initialCamera,
-        });
+        };
+        if (sceneFraming?.aspectRatio) {
+          resetLayout["scene.aspectratio"] = sceneFraming.aspectRatio;
+        }
+        plotlyLib.relayout(plotRef.current.el, resetLayout);
         axisTriadRef.current?.updateCamera(initialCamera);
       }
     }
@@ -313,7 +434,10 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     const customdata = point.customdata;
     const traceName = String(point?.data?.name ?? point?.fullData?.name ?? "");
 
-    if (onNodeSelect && (traceName === "Nodos" || traceName === "Nodos de medición")) {
+    const isStructuralNodeTrace = traceName === "Nodos"
+      || traceName === "Nodos · Deformación"
+      || traceName === "Nodos deformados";
+    if (onNodeSelect && (isStructuralNodeTrace || traceName === "Nodos de medición")) {
       const nodeId = traceName === "Nodos de medición"
         ? Number(Array.isArray(customdata) ? customdata[9] : customdata)
         : Number(nodeIds[Number(point.pointNumber)]);
@@ -361,11 +485,25 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     const cameraHandler = (event?: any) => {
       // Durante el arrastre `_fullLayout.scene.camera` todavía contiene la
       // cámara anterior. El evento sí trae la cámara viva de cada movimiento.
-      syncAxisCamera(
+      const liveCamera = (
         event?.["scene.camera"]
         ?? graphDiv?._fullLayout?.scene?._scene?.getCamera?.()
-        ?? graphDiv?._fullLayout?.scene?.camera,
+        ?? graphDiv?._fullLayout?.scene?.camera
       );
+      if (!liveCamera) return;
+      liveSceneCameraRef.current = liveCamera;
+
+      const currentAspectRatio = graphDiv?._fullLayout?.scene?.aspectratio;
+      const eventAspectRatio = event?.["scene.aspectratio"];
+      const aspectRatio = {
+        x: Number(eventAspectRatio?.x ?? event?.["scene.aspectratio.x"] ?? currentAspectRatio?.x),
+        y: Number(eventAspectRatio?.y ?? event?.["scene.aspectratio.y"] ?? currentAspectRatio?.y),
+        z: Number(eventAspectRatio?.z ?? event?.["scene.aspectratio.z"] ?? currentAspectRatio?.z),
+      };
+      if (Number.isFinite(aspectRatio.x) && Number.isFinite(aspectRatio.y) && Number.isFinite(aspectRatio.z)) {
+        liveSceneAspectRatioRef.current = aspectRatio;
+      }
+      syncAxisCamera(liveCamera);
     };
 
     if ((onElementSelect || onNodeSelect) && graphDiv?.on) {
@@ -405,9 +543,8 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     const animatedTraces = data.data
       .map((trace: any, index: number) => ({ trace, index }))
       .filter(({ trace }: any) => (
-        trace?.customdata
-        && Array.isArray(trace.customdata)
-        && trace.customdata.some((row: any) => Array.isArray(row) && row.length >= 6)
+        hasDisplacementEncoding(trace)
+        && getTraceDisplacementRows(trace).some((row: any) => Array.isArray(row) && row.length >= 6)
       ));
 
     const meshDeformTraces = data.data
@@ -451,33 +588,6 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
     plotElement.addEventListener("pointermove", onPointerMove, { capture: true });
     plotElement.on?.("plotly_relayouting", markInteracting);
     plotElement.on?.("plotly_relayout", markInteracting);
-
-    const buildScaledCoordinates = (customdata: any[], cosPhase: number, sinPhase: number, scale: number) => {
-      const n = customdata.length;
-      const x = new Array(n);
-      const y = new Array(n);
-      const z = new Array(n);
-
-      for (let i = 0; i < n; i++) {
-        const row = customdata[i];
-        if (!row || row[0] === null) {
-          x[i] = null;
-          y[i] = null;
-          z[i] = null;
-        } else if (row.length >= 9) {
-          // Respuesta armónica compleja: Re(U e^{iθ}) = Re(U)cosθ - Im(U)sinθ.
-          x[i] = row[0] + scale * (row[3] * cosPhase - row[6] * sinPhase);
-          y[i] = row[1] + scale * (row[4] * cosPhase - row[7] * sinPhase);
-          z[i] = row[2] + scale * (row[5] * cosPhase - row[8] * sinPhase);
-        } else {
-          x[i] = row[0] + row[3] * cosPhase * scale;
-          y[i] = row[1] + row[4] * cosPhase * scale;
-          z[i] = row[2] + row[5] * cosPhase * scale;
-        }
-      }
-
-      return { x, y, z };
-    };
 
     // Rotación mínima que lleva el vector unitario fromDir a toDir, aplicada a v (Rodrigues).
     // Reconstruye la malla sólida deformada solo con la traslación nodal, sin torsión.
@@ -573,7 +683,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
         const indices: number[] = [];
 
         animatedTraces.forEach(({ trace, index }: any) => {
-          const next = buildScaledCoordinates(trace.customdata, cosPhase, sinPhase, animation.scale);
+          const next = buildAnimatedTraceCoordinates(trace, cosPhase, sinPhase, animation.scale);
           xUpdates.push(next.x);
           yUpdates.push(next.y);
           zUpdates.push(next.z);
@@ -775,7 +885,7 @@ const GraphicsView: React.FC<GraphicsViewProps> = ({
       )}
 
       {!isFullscreen && (
-        <div className="absolute bottom-4 right-4 pointer-events-none opacity-40 group-hover:opacity-100 transition-opacity">
+        <div className="absolute top-4 left-4 z-10 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
           <div className="text-[10px] text-gray-500 dark:text-gray-400 font-medium bg-white/50 dark:bg-black/50 px-2 py-1 rounded backdrop-blur-sm">
             Girar: Click + Arrastrar | Zoom: Scroll
           </div>

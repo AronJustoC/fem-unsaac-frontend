@@ -28,6 +28,7 @@ interface Material {
   E: number;
   nu: number;
   rho: number;
+  yield_strength: number;
 }
 
 type SectionShape = "h" | "i" | "rectangular" | "circular";
@@ -39,6 +40,8 @@ interface Section {
   Iz: number;
   Iy: number;
   J: number;
+  height: number;
+  width: number;
   visual_shape: SectionShape;
   visual_height: number;
   visual_width: number;
@@ -85,6 +88,20 @@ const positiveNumber = (value: unknown, fallback: number) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
+
+const normalizeMaterial = (material: any): Material => ({
+  ...material,
+  id: Number(material?.id),
+  name: String(material?.name ?? `Material ${material?.id ?? ""}`).trim(),
+  E: positiveNumber(material?.E, 210e9),
+  nu: Number.isFinite(Number(material?.nu)) ? Number(material.nu) : 0.3,
+  // rho=0 identifica enlaces rígidos sin masa; no debe convertirse al valor
+  // por defecto al normalizar proyectos existentes.
+  rho: Number.isFinite(Number(material?.rho)) && Number(material.rho) >= 0
+    ? Number(material.rho)
+    : 7850,
+  yield_strength: positiveNumber(material?.yield_strength, 250e6),
+});
 
 const inferSectionShape = (section: any): SectionShape => {
   const explicitShape = String(section?.visual_shape ?? section?.shape ?? "").toLowerCase();
@@ -210,6 +227,8 @@ const normalizeSection = (section: any): Section => {
     Iz: positiveNumber(section?.Iz, 1e-4),
     Iy: positiveNumber(section?.Iy, 1e-4),
     J: positiveNumber(section?.J, 2e-4),
+    height: positiveNumber(section?.height, inferredHeight ?? visualHeight),
+    width: positiveNumber(section?.width, inferredWidth ?? visualWidth),
     visual_shape: shape,
     visual_height: visualHeight,
     visual_width: visualWidth,
@@ -286,7 +305,7 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
         return {
           nodes: parsed.nodes || [],
           elements: parsed.elements || [],
-          materials: parsed.materials || [],
+          materials: (parsed.materials || []).map(normalizeMaterial),
           sections: (parsed.sections || []).map(normalizeSection),
           restraints: restraints,
           loads: loads,
@@ -303,7 +322,7 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
         { id: 2, coords: [5, 0, 0] },
       ],
       elements: [{ id: 1, node_ids: [1, 2], material_id: 1, section_id: 1 }],
-      materials: [{ id: 1, name: "Acero A36", E: 210e9, nu: 0.3, rho: 7850 }],
+      materials: [normalizeMaterial({ id: 1, name: "Acero A36", E: 210e9, nu: 0.3, rho: 7850, yield_strength: 250e6 })],
       sections: [
         normalizeSection({
           id: 1,
@@ -509,6 +528,7 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
       E: 210e9,
       nu: 0.3,
       rho: 7850,
+      yield_strength: 250e6,
     };
     setData((prev) => ({ ...prev, materials: [...prev.materials, newMat] }));
     setEditingMaterial(newMat);
@@ -691,7 +711,7 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
         const newData: StructureData = {
           nodes: importedData.nodes || [],
           elements: importedData.elements || [],
-          materials: importedData.materials || [],
+          materials: (importedData.materials || []).map(normalizeMaterial),
           sections: (importedData.sections || []).map(normalizeSection),
           restraints: processedRestraints,
           loads: importedData.loads || [],
@@ -1402,6 +1422,34 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
                 />
               </div>
             ))}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                  Límite de fluencia (fy) [MPa]
+                </label>
+                <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-[9px] font-mono font-bold text-amber-600 dark:text-amber-300">
+                  Criterio Von Mises
+                </span>
+              </div>
+              <input
+                aria-label="Límite de fluencia fy (MPa)"
+                type="number"
+                min="0.001"
+                step="1"
+                value={editingMaterial.yield_strength / 1e6}
+                onChange={(e) =>
+                  updateMaterial(
+                    editingMaterial.id,
+                    "yield_strength",
+                    positiveNumber(e.target.value, 250) * 1e6,
+                  )
+                }
+                className="w-full bg-gray-50 dark:bg-gray-900 border border-amber-500/20 rounded-lg px-3 py-2 text-sm outline-none dark:text-white focus:border-amber-500/50"
+              />
+              <p className="text-[9px] leading-relaxed text-gray-400">
+                Se usa para calcular utilización, factor de seguridad y momento elástico de inicio de fluencia.
+              </p>
+            </div>
             <button
               onClick={() => setEditingMaterial(null)}
               className="w-full bg-unsaac-red hover:bg-unsaac-red/90 text-white py-3 rounded-xl font-bold text-sm transition-opacity mt-4"
@@ -1519,6 +1567,8 @@ const StructureEditor: React.FC<StructureEditorProps> = ({ onVisualize }) => {
                 { label: "Iz (m⁴)", field: "Iz", val: editingSection.Iz },
                 { label: "Iy (m⁴)", field: "Iy", val: editingSection.Iy },
                 { label: "J (m⁴)", field: "J", val: editingSection.J },
+                { label: "Altura resistente h (m)", field: "height", val: editingSection.height },
+                { label: "Ancho resistente b (m)", field: "width", val: editingSection.width },
               ].map((item) => (
                 <div key={item.field} className="space-y-1">
                   <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
